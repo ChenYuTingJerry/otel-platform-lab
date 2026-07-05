@@ -16,24 +16,26 @@ steps.
 - helm
 - gh (for the initial GitHub push, one-off)
 
-## Quickstart (Step 1)
+## Quickstart
+
+The build has one scaffold step (Step 0) plus four signal steps (1-4). Run them
+in order; each is verified before the next. See
+[docs/VERIFICATION.md](docs/VERIFICATION.md) for the per-step checks.
 
 ```
-make step1
+make step0    # scaffold: k3d cluster + ArgoCD
+make step1    # bootstrap Grafana via ArgoCD
 ```
 
-This runs:
+- `make step0` runs `make cluster` (k3d cluster `otel-lab`, host ports 3000 for
+  Grafana and 8081 for Argo, traefik off) then `make argocd` (helm installs
+  ArgoCD). Argo lives on 8081 rather than 8080 because Docker Desktop reserves
+  8080 on macOS.
+- `make step1` runs `make bootstrap` (applies the root Application
+  `k8s/argocd/root-app.yaml`). Argo then discovers the Grafana Application under
+  `k8s/argocd/applications/` and syncs it into the `observability` namespace.
 
-1. `make cluster`   -  creates a k3d cluster called `otel-lab` with host
-   ports 3000 (Grafana) and 8081 (Argo UI) mapped in. Argo lives on 8081
-   rather than 8080 because Docker Desktop reserves 8080 on macOS.
-2. `make argocd`    -  helm installs ArgoCD into the `argocd` namespace with
-   values from `k8s/argocd/install/values.yaml`.
-3. `make bootstrap` -  applies the root Application (`k8s/argocd/root-app.yaml`).
-   Argo then discovers the Grafana Application under
-   `k8s/argocd/applications/` and syncs it into the `observability` namespace.
-
-After sync:
+After Step 1:
 
 - Argo UI:    http://localhost:8081  (user `admin`, password from `make argo-password`)
 - Grafana UI: http://localhost:3000  (user `admin`, password `otel-lab-admin`
@@ -56,6 +58,7 @@ docs/signal-strategy.md     How logs, metrics, and traces split work
 
 Each step is verified end-to-end before the next one starts.
 
+- [x] Step 0 - Scaffold: k3d cluster + ArgoCD
 1. [x] Step 1 - Grafana UI reachable via ArgoCD
 2. [ ] Step 2 - OTel Collector + Tempo, traces from a sample app
 3. [ ] Step 3 - Loki logs pipeline with trace_id to logs pivot

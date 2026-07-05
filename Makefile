@@ -1,5 +1,12 @@
 ## otel-platform-lab Makefile
-## Step 1 targets: create k3d cluster, install ArgoCD, bootstrap Grafana.
+##
+## Build model: one scaffold step (Step 0) plus four signal steps.
+##   Step 0  scaffold  - k3d cluster + ArgoCD          (make step0)   [done]
+##   Step 1  Grafana   - the UI                         (make step1)   [done]
+##   Step 2  Tempo     - traces                                        [todo]
+##   Step 3  Loki      - logs                                          [todo]
+##   Step 4  Mimir     - metrics                                       [todo]
+## Each step is verified end to end before the next. See docs/VERIFICATION.md.
 
 CLUSTER      ?= otel-lab
 ARGOCD_NS    ?= argocd
@@ -8,8 +15,12 @@ ARGOCD_CHART ?= argo/argo-cd
 
 .PHONY: help
 help:
-	@echo "Step 1 targets:"
-	@echo "  make step1             - cluster + argocd + bootstrap (one shot)"
+	@echo "Build steps:"
+	@echo "  make step0             - Step 0 scaffold: k3d cluster + ArgoCD"
+	@echo "  make step1             - Step 1: bootstrap Grafana via Argo"
+	@echo "  (step2-4: Tempo / Loki / Mimir, not implemented yet)"
+	@echo
+	@echo "Underlying targets:"
 	@echo "  make cluster           - create k3d cluster $(CLUSTER)"
 	@echo "  make argocd            - helm install ArgoCD into ns $(ARGOCD_NS)"
 	@echo "  make bootstrap         - apply the root Application (app-of-apps)"
@@ -72,11 +83,27 @@ urls:
 	@echo "Argo UI:    http://localhost:8081  (admin / \`make argo-password\`)"
 	@echo "Grafana UI: http://localhost:3000  (admin / \`make grafana-password\`)"
 
-.PHONY: step1
-step1: cluster argocd bootstrap
+## Step 0: scaffold. k3d cluster + ArgoCD. No workloads yet.
+.PHONY: step0
+step0: cluster argocd
 	@echo
-	@echo "Step 1 install steps done. Waiting a bit for Grafana to sync..."
-	@sleep 15
+	@echo "Step 0 done: cluster + ArgoCD up."
+	@echo "Argo UI: http://localhost:8081  (admin / \`make argo-password\`)"
+
+## Step 1: bootstrap Grafana. Assumes Step 0 is up. Applies the root
+## app-of-apps; Argo then syncs Grafana. Waits for it to go Healthy.
+.PHONY: step1
+step1: bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the grafana Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/grafana >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the grafana Application to become Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/grafana --timeout=180s
+	@echo
 	@$(MAKE) status
 	@echo
 	@$(MAKE) urls
