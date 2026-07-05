@@ -13,7 +13,10 @@ by **four signal steps**, one per LGTM backend:
 - Step 3 — Loki (logs)
 - Step 4 — Mimir (metrics)
 
-Each step is verified end to end before the next starts.
+Each step is verified end to end before the next starts. Every implemented step
+has an automated test (`make verify-stepN`) that asserts its state and exits
+non-zero on failure, so it can run in CI. The **Verify** sections below lead
+with that target and list the underlying checks for reference.
 
 Conventions:
 
@@ -68,6 +71,13 @@ make argocd       # helm upgrade --install argocd, wait for server rollout
 ### Verify
 
 ```sh
+make verify-step0    # asserts the checks below; exits non-zero on failure
+```
+
+It asserts: a Ready node, `argocd-server` available, the Argo API responds, and
+admin login returns 200. The same checks by hand:
+
+```sh
 kubectl config use-context k3d-otel-lab
 kubectl get nodes                 # 1 node, Ready
 kubectl -n argocd get pods        # all Running (redis-secret-init Completed is a Job)
@@ -117,6 +127,14 @@ Argo syncs it. The target waits for that Application to appear and go Healthy.
 Assumes Step 0 is up.
 
 ### Verify
+
+```sh
+make verify-step1    # asserts the checks below; exits non-zero on failure
+```
+
+It asserts: `grafana` and `root` Applications Synced/Healthy, the Grafana
+Service on NodePort 30300, the deployment available, `/api/health` ok, admin
+login works, and zero datasources. The same checks by hand:
 
 ```sh
 # Both Applications Synced and Healthy:

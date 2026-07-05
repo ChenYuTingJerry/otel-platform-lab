@@ -20,6 +20,11 @@ help:
 	@echo "  make step1             - Step 1: bootstrap Grafana via Argo"
 	@echo "  (step2-4: Tempo / Loki / Mimir, not implemented yet)"
 	@echo
+	@echo "Tests (assert state, exit non-zero on failure):"
+	@echo "  make verify            - run every implemented step's checks"
+	@echo "  make verify-step0      - assert the scaffold state"
+	@echo "  make verify-step1      - assert Grafana synced and reachable"
+	@echo
 	@echo "Underlying targets:"
 	@echo "  make cluster           - create k3d cluster $(CLUSTER)"
 	@echo "  make argocd            - helm install ArgoCD into ns $(ARGOCD_NS)"
@@ -107,6 +112,15 @@ step1: bootstrap
 	@$(MAKE) status
 	@echo
 	@$(MAKE) urls
+
+## Tests: assert the expected state of each step. Non-zero exit on failure.
+.PHONY: verify verify-step0 verify-step1
+verify:
+	@./scripts/verify.sh all
+verify-step0:
+	@./scripts/verify.sh step0
+verify-step1:
+	@./scripts/verify.sh step1
 
 .PHONY: clean
 clean:
