@@ -25,7 +25,8 @@ make step1
 This runs:
 
 1. `make cluster`   -  creates a k3d cluster called `otel-lab` with host
-   ports 3000 (Grafana) and 8080 (Argo UI) mapped in.
+   ports 3000 (Grafana) and 8081 (Argo UI) mapped in. Argo lives on 8081
+   rather than 8080 because Docker Desktop reserves 8080 on macOS.
 2. `make argocd`    -  helm installs ArgoCD into the `argocd` namespace with
    values from `k8s/argocd/install/values.yaml`.
 3. `make bootstrap` -  applies the root Application (`k8s/argocd/root-app.yaml`).
@@ -34,7 +35,7 @@ This runs:
 
 After sync:
 
-- Argo UI:    http://localhost:8080  (user `admin`, password from `make argo-password`)
+- Argo UI:    http://localhost:8081  (user `admin`, password from `make argo-password`)
 - Grafana UI: http://localhost:3000  (user `admin`, password `otel-lab-admin`
   or from `make grafana-password`)
 

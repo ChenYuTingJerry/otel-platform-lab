@@ -26,7 +26,7 @@ cluster:
 	else \
 	  k3d cluster create $(CLUSTER) \
 	    --port "3000:30300@server:0" \
-	    --port "8080:30080@server:0" \
+	    --port "8081:30080@server:0" \
 	    --k3s-arg "--disable=traefik@server:0"; \
 	fi
 	kubectl config use-context k3d-$(CLUSTER)
@@ -69,7 +69,7 @@ grafana-password:
 
 .PHONY: urls
 urls:
-	@echo "Argo UI:    http://localhost:8080  (admin / \`make argo-password\`)"
+	@echo "Argo UI:    http://localhost:8081  (admin / \`make argo-password\`)"
 	@echo "Grafana UI: http://localhost:3000  (admin / \`make grafana-password\`)"
 
 .PHONY: step1
