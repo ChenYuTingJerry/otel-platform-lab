@@ -2,11 +2,8 @@
 ## Argo does not manage its own install; everything else is managed via
 ## Application CRs.
 
-global:
-  domain: localhost
-
-## Expose the Argo server on host localhost:8080 via k3d port mapping to
-## NodePort 30080. TLS is off so we can hit http://localhost:8080 directly.
+## Expose the Argo server on host localhost:8081 via k3d port mapping to
+## NodePort 30080. TLS is off so we can hit http://localhost:8081 directly.
 server:
   service:
     type: NodePort
@@ -16,11 +13,13 @@ configs:
   params:
     server.insecure: "true"
 
-## Keep the local footprint small. Notifications and ApplicationSet
-## controllers are not needed for this lab.
+## Keep the local footprint small. We use the local admin account only, so
+## dex (the SSO/OIDC bridge) is off, and we send no alerts, so the
+## notifications controller is off. Both toggles are valid keys in this chart
+## and take effect (no dex or notifications pod is created).
+## Note: the argo-cd chart has no `applicationSet.enabled` key, so the
+## ApplicationSet controller stays running. We do not try to disable it.
 notifications:
-  enabled: false
-applicationSet:
   enabled: false
 dex:
   enabled: false
