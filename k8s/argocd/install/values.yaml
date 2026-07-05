@@ -1,0 +1,26 @@
+## ArgoCD Helm values used by `make argocd` (bootstrap only).
+## Argo does not manage its own install; everything else is managed via
+## Application CRs.
+
+global:
+  domain: localhost
+
+## Expose the Argo server on host localhost:8080 via k3d port mapping to
+## NodePort 30080. TLS is off so we can hit http://localhost:8080 directly.
+server:
+  service:
+    type: NodePort
+    nodePortHttp: 30080
+
+configs:
+  params:
+    server.insecure: "true"
+
+## Keep the local footprint small. Notifications and ApplicationSet
+## controllers are not needed for this lab.
+notifications:
+  enabled: false
+applicationSet:
+  enabled: false
+dex:
+  enabled: false

@@ -1,0 +1,16 @@
+.DS_Store
+*.log
+*.swp
+*.tmp
+
+# Local kubeconfig snippets we sometimes dump for debugging
+kubeconfig.local
+
+# Editor / IDE
+.idea/
+.vscode/
+
+# Local Argo password dumps (in case we redirect `make argo-password` to a file)
+*.password
+
+# Nothing project-specific to ignore yet, add here as needed

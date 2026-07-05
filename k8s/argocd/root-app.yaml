@@ -1,0 +1,29 @@
+## Root Application (app-of-apps).
+## Points Argo at k8s/argocd/applications/ in this repo. Anything added
+## under that path is picked up automatically. This is the only Application
+## we apply by hand (via `make bootstrap`).
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  source:
+    repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+    targetRevision: main
+    path: k8s/argocd/applications
+    directory:
+      recurse: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

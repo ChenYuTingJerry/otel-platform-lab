@@ -1,0 +1,35 @@
+## Grafana Helm values, read by Argo through the Grafana Application CR.
+
+## Service is exposed via NodePort 30300, mapped to host localhost:3000 by
+## k3d cluster port mapping.
+service:
+  type: NodePort
+  port: 80
+  targetPort: 3000
+  nodePort: 30300
+  portName: http
+
+## Lab-only credentials. Not a real secret; documented in README.
+adminUser: admin
+adminPassword: otel-lab-admin
+
+## No persistence for the lab. Losing dashboards on pod restart is fine.
+persistence:
+  enabled: false
+
+## No pre-loaded datasources or dashboards. These are added one at a time
+## when Tempo (Step 2), Loki (Step 3), and Mimir (Step 4) come online.
+sidecar:
+  datasources:
+    enabled: false
+  dashboards:
+    enabled: false
+
+## Keep the pod light for local k3d.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
