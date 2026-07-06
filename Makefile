@@ -114,13 +114,15 @@ step1: bootstrap
 	@$(MAKE) urls
 
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1
+.PHONY: verify verify-step0 verify-step1 verify-step2a
 verify:
 	@./scripts/verify.sh all
 verify-step0:
 	@./scripts/verify.sh step0
 verify-step1:
 	@./scripts/verify.sh step1
+verify-step2a:
+	@./scripts/verify.sh step2a
 
 .PHONY: clean
 clean:

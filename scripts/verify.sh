@@ -97,11 +97,42 @@ verify_step1() {
   assert_eq "Grafana has zero datasources (empty until Step 2+)" "[]" "$ds"
 }
 
+verify_step2a() {
+  echo "Step 2a - OTel Operator:"
+
+  local appstate
+  appstate=$($KUBECTL -n argocd get application otel-operator \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "otel-operator Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  local avail
+  avail=$($KUBECTL -n opentelemetry-operator-system get deploy opentelemetry-operator \
+    -o jsonpath='{.status.availableReplicas}' 2>/dev/null)
+  assert_ge "operator deployment available" 1 "$avail"
+
+  if $KUBECTL get crd opentelemetrycollectors.opentelemetry.io >/dev/null 2>&1; then
+    pass "CRD opentelemetrycollectors present"
+  else
+    fail "CRD opentelemetrycollectors present"
+  fi
+
+  if $KUBECTL get crd instrumentations.opentelemetry.io >/dev/null 2>&1; then
+    pass "CRD instrumentations present"
+  else
+    fail "CRD instrumentations present"
+  fi
+
+  local mwh
+  mwh=$($KUBECTL get mutatingwebhookconfiguration -o name 2>/dev/null | grep -c opentelemetry)
+  assert_ge "mutating webhook for opentelemetry present" 1 "$mwh"
+}
+
 case "${1:-all}" in
-  step0) verify_step0 ;;
-  step1) verify_step1 ;;
-  all)   verify_step0; echo; verify_step1 ;;
-  *) echo "usage: $0 [step0|step1|all]" >&2; exit 2 ;;
+  step0)  verify_step0 ;;
+  step1)  verify_step1 ;;
+  step2a) verify_step2a ;;
+  all)    verify_step0; echo; verify_step1; echo; verify_step2a ;;
+  *) echo "usage: $0 [step0|step1|step2a|all]" >&2; exit 2 ;;
 esac
 
 echo

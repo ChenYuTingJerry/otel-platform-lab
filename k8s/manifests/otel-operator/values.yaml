@@ -1,0 +1,25 @@
+## OpenTelemetry Operator Helm values, read by Argo through the Application CR.
+##
+## The operator provides two CRDs we use:
+##   - OpenTelemetryCollector (Step 2c: the Collector runs as a CR)
+##   - Instrumentation        (Step 2d: zero-code auto-instrumentation)
+## and a mutating webhook that injects instrumentation into annotated pods.
+
+## The webhook needs a TLS cert. We self-generate it instead of depending on
+## cert-manager: this lab has one webhook and no serving TLS, so a shared cert
+## controller is not worth it yet. See docs/adr/005.
+admissionWebhooks:
+  certManager:
+    enabled: false
+  autoGenerateCert:
+    enabled: true
+
+## Keep the operator light for local k3d.
+manager:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
