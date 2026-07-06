@@ -38,14 +38,21 @@ Status at a glance:
 |------|-------|
 | Step 0 — Scaffold (k3d cluster + ArgoCD) | Done (verified on k3d) |
 | Step 1 — Grafana on k3d via ArgoCD | Done (verified on k3d) |
-| Step 2 — OTel Collector + Tempo (traces end to end) | Not implemented |
+| Step 2a — OTel Operator (auto-instrumentation control plane) | Done (verified on k3d) |
+| Step 2b — Tempo backend + Grafana datasource | Not implemented |
+| Step 2c — OTel Collector as single ingress | Not implemented |
+| Step 2d — Auto-instrumentation + sample app | Not implemented |
+| Step 2e — One trace queryable end to end | Not implemented |
 | Step 3 — Loki (logs pipeline + trace_id to logs pivot) | Not implemented |
 | Step 4 — Mimir (span metrics + direct metrics) | Not implemented |
 
-A full clean rebuild runs the two done steps in order:
+A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
+has no build target of its own: the root app-of-apps picks it up during
+`make step1`, so it comes up in the same pass.
 
 ```sh
 make clean && make step0 && make step1
+make verify        # asserts step0 + step1 + step2a
 ```
 
 ---
@@ -164,17 +171,113 @@ Acceptance:
 
 ---
 
-## Step 2 — OTel Collector + Tempo, traces end to end (Not implemented)
+## Step 2 — OTel Collector + Tempo, traces end to end
 
-Build/Verify commands: TODO when built.
+Step 2 is split into sub-steps, each verified before the next. The operator
+(2a) is done. The rest are not built yet: they carry acceptance criteria and a
+planned verify target, no commands. The union of the sub-step acceptance boxes
+below is the definition of done for the whole step.
+
+### Step 2a — OTel Operator (Done)
+
+The control plane for auto-instrumentation. Installed as an Argo Application
+(`k8s/argocd/applications/otel-operator.yaml`), multi-source like Grafana. It
+has no build target of its own: the root app-of-apps picks it up during
+`make step1`. sync-wave 0, so its CRDs exist before the Collector CR (wave 2).
+
+#### Verify
+
+```sh
+make verify-step2a    # asserts the checks below; exits non-zero on failure
+```
+
+It asserts: the `otel-operator` Application Synced/Healthy, the operator
+deployment available, both CRDs present, and the mutating webhook installed.
+The same checks by hand:
+
+```sh
+kubectl -n argocd get application otel-operator \
+  -o custom-columns=SYNC:.status.sync.status,HEALTH:.status.health.status --no-headers
+kubectl -n opentelemetry-operator-system get deploy opentelemetry-operator
+kubectl get crd | grep opentelemetry.io          # opentelemetrycollectors + instrumentations
+kubectl get mutatingwebhookconfiguration | grep opentelemetry
+```
+
+Acceptance:
+
+- [x] `otel-operator` Application Synced and Healthy.
+- [x] Operator deployment available in `opentelemetry-operator-system`.
+- [x] CRDs `opentelemetrycollectors` and `instrumentations` present.
+- [x] Mutating webhook for injection installed.
+
+### Step 2b — Tempo backend + Grafana datasource (Not implemented)
+
+Deploy Tempo as an Argo Application (same pattern as Grafana), single-binary
+mode for local k3d. Then add a Tempo datasource to Grafana so traces are
+queryable from the UI.
+
+Planned verify target: `make verify-step2b`. It should assert:
+
+- `tempo` Application Synced and Healthy.
+- Tempo workload available in `observability`; OTLP endpoint reachable
+  (service on 4317).
+- Tempo `/ready` responds.
+- Grafana has a datasource of `type: tempo`.
+
+Note: this flips the Step 1 check that Grafana has zero datasources. Update
+`verify_step1` in `scripts/verify.sh` when this lands.
 
 Acceptance criteria:
 
-- [ ] OTel Operator installed; zero-code auto-instrumentation injection works.
-- [ ] OTel Collector is the only telemetry ingress; the sample app sends OTLP to
-      the Collector only, never to a backend directly.
-- [ ] Tempo deployed via an Argo Application (same pattern as Grafana).
+- [ ] Tempo deployed via an Argo Application.
 - [ ] Grafana has a Tempo datasource.
+
+### Step 2c — OTel Collector as single ingress (Not implemented)
+
+Run the Collector as an `OpenTelemetryCollector` CR (deployment mode). It
+receives OTLP on 4317/4318 and exports only to Tempo. This is the one ingress:
+apps never talk to a backend directly (see ADR 002). sync-wave 2, after the
+operator CRDs exist.
+
+Planned verify target: `make verify-step2c`. It should assert:
+
+- The `OpenTelemetryCollector` CR exists and reports ready.
+- The Collector deployment available; service exposes OTLP 4317/4318.
+- The Collector exports to the Tempo endpoint.
+
+Acceptance criteria:
+
+- [ ] OTel Collector is the only telemetry ingress.
+
+### Step 2d — Auto-instrumentation + sample app (Not implemented)
+
+Create an `Instrumentation` CR and deploy a sample app that opts in via
+annotation. The operator webhook injects an init-container and sets
+`OTEL_EXPORTER_OTLP_ENDPOINT` to the Collector, never to a backend.
+
+Planned verify target: `make verify-step2d`. It should assert:
+
+- The `Instrumentation` CR present.
+- The sample app pod shows the injected init-container and OTEL env pointing at
+  the Collector.
+- The sample app Running.
+
+Acceptance criteria:
+
+- [ ] Zero-code auto-instrumentation injection works.
+- [ ] The sample app sends OTLP to the Collector only, never to a backend directly.
+
+### Step 2e — One trace queryable end to end (Not implemented)
+
+The real delivery check. Drive traffic to the sample app, then query Tempo
+through Grafana and find the trace. This closes Step 2.
+
+Planned verify target: `make verify-step2` (the full end-to-end check). It
+should send a request to the sample app, then search Tempo (via the Grafana
+datasource proxy or the Tempo API) and assert at least one matching trace.
+
+Acceptance criteria:
+
 - [ ] A trace from the sample app is queryable in Grafana/Tempo, end to end.
 
 ## Step 3 — Loki, logs pipeline + trace pivot (Not implemented)
