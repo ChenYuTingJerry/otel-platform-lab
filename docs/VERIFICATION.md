@@ -39,7 +39,7 @@ Status at a glance:
 | Step 0 — Scaffold (k3d cluster + ArgoCD) | Done (verified on k3d) |
 | Step 1 — Grafana on k3d via ArgoCD | Done (verified on k3d) |
 | Step 2a — OTel Operator (auto-instrumentation control plane) | Done (verified on k3d) |
-| Step 2b — Tempo backend + Grafana datasource | Implemented (Argo verify after push) |
+| Step 2b — Tempo backend + Grafana datasource | Done (verified on k3d) |
 | Step 2c — OTel Collector as single ingress | Not implemented |
 | Step 2d — Auto-instrumentation + sample app | Not implemented |
 | Step 2e — One trace queryable end to end | Not implemented |
@@ -214,7 +214,7 @@ Acceptance:
 - [x] CRDs `opentelemetrycollectors` and `instrumentations` present.
 - [x] Mutating webhook for injection installed.
 
-### Step 2b — Tempo backend + Grafana datasource (Implemented)
+### Step 2b — Tempo backend + Grafana datasource (Done)
 
 Tempo runs as an Argo Application in single-binary mode, same multi-source
 shape as Grafana. The chart comes from `grafana-community`, not the deprecated
@@ -222,12 +222,6 @@ shape as Grafana. The chart comes from `grafana-community`, not the deprecated
 Grafana's values: the Tempo Application ships a labelled ConfigMap that
 Grafana's datasource sidecar loads at runtime, so each backend owns its own
 datasource (see `docs/adr/007`).
-
-Note on status: this is implemented and smoke-tested locally (helm install into
-a throwaway namespace: pod Ready, `/ready` 200, OTLP ports open). The full Argo
-path is verified only after the manifests are pushed, because Argo syncs from
-the Git remote, not the working tree. Run the Build then the Verify below once
-pushed.
 
 #### Build
 
@@ -261,8 +255,8 @@ curl -s -u admin:otel-lab-admin http://localhost:3000/api/datasources  # include
 
 Acceptance criteria:
 
-- [ ] Tempo deployed via an Argo Application.
-- [ ] Grafana has a Tempo datasource.
+- [x] Tempo deployed via an Argo Application.
+- [x] Grafana has a Tempo datasource.
 
 ### Step 2c — OTel Collector as single ingress (Not implemented)
 
