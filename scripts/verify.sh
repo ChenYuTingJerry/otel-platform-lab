@@ -92,9 +92,9 @@ verify_step1() {
   user=$(curl -s -u "admin:${GRAFANA_PW}" "${GRAFANA_URL}/api/user" 2>/dev/null)
   assert_contains "Grafana admin login works" '"isGrafanaAdmin":true' "$user"
 
-  local ds
-  ds=$(curl -s -u "admin:${GRAFANA_PW}" "${GRAFANA_URL}/api/datasources" 2>/dev/null)
-  assert_eq "Grafana has zero datasources (empty until Step 2+)" "[]" "$ds"
+  # Datasources are no longer asserted here. Grafana starts empty, but from
+  # Step 2b on, each backend ships its own datasource via the sidecar. The
+  # Tempo datasource is checked in verify_step2b.
 }
 
 verify_step2a() {
@@ -127,12 +127,40 @@ verify_step2a() {
   assert_ge "mutating webhook for opentelemetry present" 1 "$mwh"
 }
 
+verify_step2b() {
+  echo "Step 2b - Tempo backend + Grafana datasource:"
+
+  local appstate
+  appstate=$($KUBECTL -n argocd get application tempo \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "tempo Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # Tempo runs as a StatefulSet. Its readinessProbe hits /ready on 3200, so a
+  # ready replica already proves /ready responds; no port-forward needed.
+  local ready
+  ready=$($KUBECTL -n observability get statefulset tempo \
+    -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  assert_ge "tempo StatefulSet ready (readinessProbe hits /ready)" 1 "$ready"
+
+  # OTLP gRPC ingress is exposed. The Collector (Step 2c) pushes traces here.
+  local otlp
+  otlp=$($KUBECTL -n observability get svc tempo \
+    -o jsonpath='{.spec.ports[?(@.port==4317)].port}' 2>/dev/null)
+  assert_eq "tempo Service exposes OTLP 4317" "4317" "$otlp"
+
+  # The datasource sidecar loaded the Tempo datasource into Grafana.
+  local ds
+  ds=$(curl -s -u "admin:${GRAFANA_PW}" "${GRAFANA_URL}/api/datasources" 2>/dev/null)
+  assert_contains "Grafana has a Tempo datasource" '"type":"tempo"' "$ds"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
   step2a) verify_step2a ;;
-  all)    verify_step0; echo; verify_step1; echo; verify_step2a ;;
-  *) echo "usage: $0 [step0|step1|step2a|all]" >&2; exit 2 ;;
+  step2b) verify_step2b ;;
+  all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|all]" >&2; exit 2 ;;
 esac
 
 echo

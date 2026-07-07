@@ -1,0 +1,29 @@
+## Grafana datasource for Tempo.
+##
+## This ships with the Tempo Application, not with Grafana's values. Grafana
+## runs a datasource sidecar (a plain container, not a CRD) that watches for
+## ConfigMaps labelled `grafana_datasource` and loads them at runtime. So each
+## backend brings its own datasource: Loki (Step 3) and Mimir (Step 4) will
+## each add one the same way, without touching Grafana. See docs/adr/007.
+##
+## Not a real secret; this is a lab. The URL points at the in-cluster Tempo
+## Service on its HTTP query port (3200), which is where Grafana's Tempo
+## datasource sends TraceQL and trace-by-id queries.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-grafana-datasource
+  namespace: observability
+  labels:
+    grafana_datasource: "1"
+data:
+  tempo-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        access: proxy
+        url: http://tempo.observability.svc.cluster.local:3200
+        isDefault: false
+        editable: false

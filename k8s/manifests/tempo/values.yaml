@@ -1,0 +1,35 @@
+## Tempo Helm values (single-binary mode), read by Argo through the Tempo
+## Application CR. Tempo is the traces backend for Step 2.
+##
+## Single binary is enough for local k3d: one process holds distributor,
+## ingester, querier, and compactor. No object storage, no microservices.
+
+## One instance for the lab.
+replicas: 1
+
+## No persistence. Traces live in an emptyDir; losing them on a pod restart
+## is fine here. Matches the "no persistence" choice we made for Grafana.
+persistence:
+  enabled: false
+
+tempo:
+  ## Turn off anonymous usage reporting for the lab.
+  reportingEnabled: false
+
+  ## Drop old traces after a day. Plenty for a lab; keeps disk small.
+  retention: 24h
+
+  ## Receivers stay at the chart default, which already opens OTLP on 4317
+  ## (gRPC) and 4318 (HTTP). The chart also opens Jaeger and OpenCensus
+  ## receivers and hard-wires their ports into its Service template, so we
+  ## can't trim them without breaking the render. We only use OTLP (the
+  ## Collector in Step 2c pushes OTLP); the other ports sit idle.
+
+  ## Keep the pod light for local k3d.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

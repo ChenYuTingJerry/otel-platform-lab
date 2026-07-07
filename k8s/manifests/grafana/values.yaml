@@ -17,11 +17,16 @@ adminPassword: otel-lab-admin
 persistence:
   enabled: false
 
-## No pre-loaded datasources or dashboards. These are added one at a time
-## when Tempo (Step 2), Loki (Step 3), and Mimir (Step 4) come online.
+## Datasources arrive one at a time as each backend comes online: Tempo
+## (Step 2b), Loki (Step 3), Mimir (Step 4). Rather than list them here, we
+## let each backend ship its own. The datasource sidecar (a plain container,
+## not a CRD) watches for ConfigMaps labelled `grafana_datasource` in this
+## namespace and loads them at runtime. See docs/adr/007.
 sidecar:
   datasources:
-    enabled: false
+    enabled: true
+    label: grafana_datasource
+    labelValue: "1"
   dashboards:
     enabled: false
 

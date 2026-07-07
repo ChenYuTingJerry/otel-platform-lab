@@ -5,8 +5,9 @@ single telemetry ingress feeding an LGTM stack (Loki, Grafana, Tempo, Mimir).
 Deployed on a local k3d cluster (Apple Silicon), managed by ArgoCD from
 day one.
 
-Current stage: Step 1 (Grafana only). Tempo, Loki, and Mimir land in later
-steps.
+Current stage: Step 2 in progress. The OTel Operator (2a) and Tempo with its
+Grafana datasource (2b) are in; the Collector, sample app, and end-to-end trace
+(2c-2e) are next. Loki and Mimir land in later steps.
 
 ## Prerequisites
 
@@ -24,7 +25,8 @@ in order; each is verified before the next. See
 
 ```
 make step0    # scaffold: k3d cluster + ArgoCD
-make step1    # bootstrap Grafana via ArgoCD
+make step1    # bootstrap Grafana via ArgoCD (also brings up the OTel Operator)
+make step2b   # Tempo backend + its Grafana datasource
 ```
 
 - `make step0` runs `make cluster` (k3d cluster `otel-lab`, host ports 3000 for

@@ -39,7 +39,7 @@ Status at a glance:
 | Step 0 — Scaffold (k3d cluster + ArgoCD) | Done (verified on k3d) |
 | Step 1 — Grafana on k3d via ArgoCD | Done (verified on k3d) |
 | Step 2a — OTel Operator (auto-instrumentation control plane) | Done (verified on k3d) |
-| Step 2b — Tempo backend + Grafana datasource | Not implemented |
+| Step 2b — Tempo backend + Grafana datasource | Implemented (Argo verify after push) |
 | Step 2c — OTel Collector as single ingress | Not implemented |
 | Step 2d — Auto-instrumentation + sample app | Not implemented |
 | Step 2e — One trace queryable end to end | Not implemented |
@@ -48,11 +48,12 @@ Status at a glance:
 
 A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
 has no build target of its own: the root app-of-apps picks it up during
-`make step1`, so it comes up in the same pass.
+`make step1`, so it comes up in the same pass. Tempo (Step 2b) is discovered
+the same way, but has its own `make step2b` that waits for it to go Healthy.
 
 ```sh
-make clean && make step0 && make step1
-make verify        # asserts step0 + step1 + step2a
+make clean && make step0 && make step1 && make step2b
+make verify        # asserts step0 + step1 + step2a + step2b
 ```
 
 ---
@@ -140,8 +141,10 @@ make verify-step1    # asserts the checks below; exits non-zero on failure
 ```
 
 It asserts: `grafana` and `root` Applications Synced/Healthy, the Grafana
-Service on NodePort 30300, the deployment available, `/api/health` ok, admin
-login works, and zero datasources. The same checks by hand:
+Service on NodePort 30300, the deployment available, `/api/health` ok, and
+admin login works. It no longer checks the datasource count: Grafana starts
+empty, but from Step 2b on each backend ships its own datasource, so that
+check moved to `verify-step2b`. The same checks by hand:
 
 ```sh
 # Both Applications Synced and Healthy:
@@ -157,7 +160,7 @@ kubectl -n observability get svc grafana  # NodePort 80:30300/TCP
 # Login actually works, and Grafana is empty (the real delivery check):
 curl -s http://localhost:3000/api/health                              # database: ok
 curl -s -u admin:otel-lab-admin http://localhost:3000/api/user        # login: admin, isGrafanaAdmin: true
-curl -s -u admin:otel-lab-admin http://localhost:3000/api/datasources # []  (empty until Step 2+)
+curl -s -u admin:otel-lab-admin http://localhost:3000/api/datasources # Tempo datasource from Step 2b onward
 
 make grafana-password    # otel-lab-admin (also in k8s/manifests/grafana/values.yaml)
 ```
@@ -167,7 +170,8 @@ Acceptance:
 - [x] `grafana` Application is Synced and Healthy; `root` is Synced and Healthy.
 - [x] Grafana pod Running in `observability`, service NodePort 30300.
 - [x] Grafana UI reachable on localhost:3000, admin login works.
-- [x] Grafana has zero datasources (they arrive in Steps 2-4).
+- [x] Grafana starts with no datasources; they arrive from Step 2b (checked in
+  `verify-step2b`, not here).
 
 ---
 
@@ -210,22 +214,50 @@ Acceptance:
 - [x] CRDs `opentelemetrycollectors` and `instrumentations` present.
 - [x] Mutating webhook for injection installed.
 
-### Step 2b — Tempo backend + Grafana datasource (Not implemented)
+### Step 2b — Tempo backend + Grafana datasource (Implemented)
 
-Deploy Tempo as an Argo Application (same pattern as Grafana), single-binary
-mode for local k3d. Then add a Tempo datasource to Grafana so traces are
-queryable from the UI.
+Tempo runs as an Argo Application in single-binary mode, same multi-source
+shape as Grafana. The chart comes from `grafana-community`, not the deprecated
+`grafana/tempo` (see `docs/adr/008`). The Grafana datasource is not baked into
+Grafana's values: the Tempo Application ships a labelled ConfigMap that
+Grafana's datasource sidecar loads at runtime, so each backend owns its own
+datasource (see `docs/adr/007`).
 
-Planned verify target: `make verify-step2b`. It should assert:
+Note on status: this is implemented and smoke-tested locally (helm install into
+a throwaway namespace: pod Ready, `/ready` 200, OTLP ports open). The full Argo
+path is verified only after the manifests are pushed, because Argo syncs from
+the Git remote, not the working tree. Run the Build then the Verify below once
+pushed.
 
-- `tempo` Application Synced and Healthy.
-- Tempo workload available in `observability`; OTLP endpoint reachable
-  (service on 4317).
-- Tempo `/ready` responds.
-- Grafana has a datasource of `type: tempo`.
+#### Build
 
-Note: this flips the Step 1 check that Grafana has zero datasources. Update
-`verify_step1` in `scripts/verify.sh` when this lands.
+```sh
+make step2b       # applies the root app (idempotent); Argo syncs Tempo
+```
+
+The root app-of-apps discovers `k8s/argocd/applications/tempo.yaml`, creates the
+`tempo` Application, and Argo syncs it: the Tempo StatefulSet plus the datasource
+ConfigMap. The target waits for the `tempo` Application to go Healthy. Assumes
+Step 1 is up. sync-wave 1, so Tempo is up before the Collector (wave 2, Step 2c).
+
+#### Verify
+
+```sh
+make verify-step2b    # asserts the checks below; exits non-zero on failure
+```
+
+It asserts: the `tempo` Application Synced/Healthy, the Tempo StatefulSet ready
+(its readinessProbe hits `/ready` on 3200, so a ready replica proves `/ready`
+responds), the Service exposes OTLP 4317, and Grafana has a `type: tempo`
+datasource. The same checks by hand:
+
+```sh
+kubectl -n argocd get application tempo \
+  -o custom-columns=SYNC:.status.sync.status,HEALTH:.status.health.status --no-headers
+kubectl -n observability get statefulset tempo   # READY 1/1
+kubectl -n observability get svc tempo -o jsonpath='{range .spec.ports[*]}{.name}={.port}{"\n"}{end}'
+curl -s -u admin:otel-lab-admin http://localhost:3000/api/datasources  # includes "type":"tempo"
+```
 
 Acceptance criteria:
 
