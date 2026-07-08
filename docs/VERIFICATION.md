@@ -40,7 +40,7 @@ Status at a glance:
 | Step 1 — Grafana on k3d via ArgoCD | Done (verified on k3d) |
 | Step 2a — OTel Operator (auto-instrumentation control plane) | Done (verified on k3d) |
 | Step 2b — Tempo backend + Grafana datasource | Done (verified on k3d) |
-| Step 2c — OTel Collector as single ingress | Not implemented |
+| Step 2c — OTel Collector (single ingress gateway) | Done (workload verified on k3d) |
 | Step 2d — Auto-instrumentation + sample app | Not implemented |
 | Step 2e — One trace queryable end to end | Not implemented |
 | Step 3 — Loki (logs pipeline + trace_id to logs pivot) | Not implemented |
@@ -48,12 +48,13 @@ Status at a glance:
 
 A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
 has no build target of its own: the root app-of-apps picks it up during
-`make step1`, so it comes up in the same pass. Tempo (Step 2b) is discovered
-the same way, but has its own `make step2b` that waits for it to go Healthy.
+`make step1`, so it comes up in the same pass. Tempo (Step 2b) and the Collector
+(Step 2c) are discovered the same way, but each has its own `make step2b` /
+`make step2c` that waits for it to go Healthy.
 
 ```sh
-make clean && make step0 && make step1 && make step2b
-make verify        # asserts step0 + step1 + step2a + step2b
+make clean && make step0 && make step1 && make step2b && make step2c
+make verify        # asserts step0 + step1 + step2a + step2b + step2c
 ```
 
 ---
@@ -258,22 +259,57 @@ Acceptance criteria:
 - [x] Tempo deployed via an Argo Application.
 - [x] Grafana has a Tempo datasource.
 
-### Step 2c — OTel Collector as single ingress (Not implemented)
+### Step 2c — OTel Collector, single ingress gateway (Done)
 
-Run the Collector as an `OpenTelemetryCollector` CR (deployment mode). It
-receives OTLP on 4317/4318 and exports only to Tempo. This is the one ingress:
-apps never talk to a backend directly (see ADR 002). sync-wave 2, after the
-operator CRDs exist.
+The Collector runs as a central Deployment (gateway), deployed with the
+`opentelemetry-collector` Helm chart, same chart+`$values` shape as Grafana and
+Tempo. It receives OTLP on 4317/4318 and exports only to Tempo. This is the one
+ingress: apps never talk to a backend directly (see ADR 002). It is not the
+operator CR: a gateway needs none of the operator-only features (see ADR 009).
+sync-wave 2, after the operator (wave 0) and Tempo (wave 1). The pipeline is
+`memory_limiter` + `resource` + `batch`, traces only.
 
-Planned verify target: `make verify-step2c`. It should assert:
+#### Build
 
-- The `OpenTelemetryCollector` CR exists and reports ready.
-- The Collector deployment available; service exposes OTLP 4317/4318.
-- The Collector exports to the Tempo endpoint.
+```sh
+make step2c       # applies the root app (idempotent); Argo syncs the Collector
+```
+
+The root app-of-apps discovers `k8s/argocd/applications/collector.yaml`, creates
+the `collector` Application, and Argo syncs it: the Collector Deployment,
+Service, and ConfigMap from the chart. The target waits for the `collector`
+Application to go Healthy. Assumes Step 2b is up.
+
+#### Verify
+
+```sh
+make verify-step2c    # asserts the checks below; exits non-zero on failure
+```
+
+It asserts: the `collector` Application Synced/Healthy, the Collector Deployment
+available (an available replica means it passed its health_check readiness
+probe), the Service exposes OTLP 4317 and 4318, and the rendered config exports
+to the Tempo endpoint. The same checks by hand:
+
+```sh
+kubectl -n argocd get application collector \
+  -o custom-columns=SYNC:.status.sync.status,HEALTH:.status.health.status --no-headers
+kubectl -n observability get deploy,svc otel-collector
+kubectl -n observability get svc otel-collector -o jsonpath='{range .spec.ports[*]}{.name}={.port}{"\n"}{end}'
+kubectl -n observability get cm otel-collector -o yaml | grep 'tempo.observability'
+kubectl -n observability logs deploy/otel-collector | tail   # "Everything is ready", otlp on 4317/4318
+```
+
+Note on verification: the Collector workload was verified end to end on k3d by a
+direct smoke test (render the chart into a throwaway namespace, push one OTLP
+span, then read it back from Tempo through the Grafana datasource proxy). The
+returned trace carried `deployment.environment=lab`, which proves the `resource`
+processor runs. `make step2c` exercises the same workload through Argo once the
+manifests are on the tracked branch (`main`).
 
 Acceptance criteria:
 
-- [ ] OTel Collector is the only telemetry ingress.
+- [x] OTel Collector is the only telemetry ingress.
 
 ### Step 2d — Auto-instrumentation + sample app (Not implemented)
 

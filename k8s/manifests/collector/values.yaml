@@ -1,0 +1,96 @@
+## OpenTelemetry Collector Helm values, read by Argo through the collector
+## Application CR. This is the single telemetry ingress for Step 2c.
+##
+## Gateway topology: one central Deployment behind a Service. Apps send OTLP
+## here; the Collector is the only thing that talks to a backend (see ADR 002
+## and ADR 009). Not the operator CR: a gateway needs none of the operator-only
+## features (sidecar injection), so it ships as its own chart like Tempo and
+## Grafana.
+##
+## sync-wave 2: after the operator CRDs (wave 0) and Tempo (wave 1).
+
+## Central gateway, not a per-node DaemonSet or per-pod sidecar.
+mode: deployment
+
+## Clean names: Deployment, Service and ConfigMap all become "otel-collector"
+## instead of the chart's "otel-collector-opentelemetry-collector".
+fullnameOverride: otel-collector
+
+replicaCount: 1
+
+## The k8s distro carries the components we use (otlp, memory_limiter, resource,
+## batch). No contrib image needed yet.
+image:
+  repository: otel/opentelemetry-collector-k8s
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+presets:
+  ## k8sattributes needs a ClusterRole to watch pods. Deferred to a later step
+  ## (added with the sample app), so keep it off here.
+  kubernetesAttributes:
+    enabled: false
+
+## The chart opens Jaeger and Zipkin ports on the Service by default. We only
+## accept OTLP, so disable them. OTLP gRPC (4317) and HTTP (4318) stay on.
+ports:
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+
+## Collector pipeline. The chart deep-merges this over its defaults, which ship
+## logs/metrics/traces pipelines with a debug exporter and jaeger/zipkin/
+## prometheus receivers. We set the unwanted defaults to null to drop them, so
+## the effective config is traces-only, OTLP-in, Tempo-out.
+config:
+  receivers:
+    jaeger: null
+    zipkin: null
+    prometheus: null
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+  processors:
+    ## memory_limiter first: under memory pressure it refuses data so
+    ## backpressure reaches the receiver, instead of the pod being OOM-killed.
+    memory_limiter:
+      check_interval: 1s
+      limit_percentage: 80
+      spike_limit_percentage: 25
+    ## Static enrichment. A cheap example of the central enrichment ADR 002
+    ## puts on the Collector. k8s attributes come later with the preset above.
+    resource:
+      attributes:
+        - key: deployment.environment
+          value: lab
+          action: upsert
+    batch: {}
+  exporters:
+    ## Drop the chart's default debug exporter; we export to Tempo only.
+    debug: null
+    otlp/tempo:
+      endpoint: tempo.observability.svc.cluster.local:4317
+      tls:
+        insecure: true
+  service:
+    pipelines:
+      ## Traces only for now. Logs (Step 3) and metrics (Step 4) come later.
+      logs: null
+      metrics: null
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, resource, batch]
+        exporters: [otlp/tempo]

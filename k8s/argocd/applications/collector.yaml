@@ -1,0 +1,46 @@
+## Argo Application: OpenTelemetry Collector (Step 2c), the single telemetry
+## ingress. Multi-source, same chart+$values shape as Grafana and Tempo:
+##   source 0 - the opentelemetry-collector Helm chart
+##   source 1 - this Git repo as `$values`, for values.yaml
+##
+## Gateway topology (central Deployment), deployed as its own chart rather than
+## an OpenTelemetryCollector CR: a gateway needs none of the operator-only
+## features, so the whole workload stays in the Helm release and fully
+## Argo-managed (see docs/adr/009). The operator is only used later, for
+## Step 2d auto-instrumentation.
+##
+## sync-wave 2: after the operator (wave 0) and Tempo (wave 1), which this
+## Collector exports to.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: collector
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  sources:
+    - repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+      chart: opentelemetry-collector
+      targetRevision: 0.162.0
+      helm:
+        releaseName: otel-collector
+        valueFiles:
+          - $values/k8s/manifests/collector/values.yaml
+    - repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

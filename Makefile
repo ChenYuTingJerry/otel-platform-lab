@@ -3,7 +3,7 @@
 ## Build model: one scaffold step (Step 0) plus four signal steps.
 ##   Step 0  scaffold  - k3d cluster + ArgoCD          (make step0)   [done]
 ##   Step 1  Grafana   - the UI                         (make step1)   [done]
-##   Step 2  Tempo     - traces                         (make step2b)  [2b done]
+##   Step 2  Tempo     - traces                    (make step2b, step2c)  [2b,2c done]
 ##   Step 3  Loki      - logs                                          [todo]
 ##   Step 4  Mimir     - metrics                                       [todo]
 ## Each step is verified end to end before the next. See docs/VERIFICATION.md.
@@ -19,13 +19,15 @@ help:
 	@echo "  make step0             - Step 0 scaffold: k3d cluster + ArgoCD"
 	@echo "  make step1             - Step 1: bootstrap Grafana via Argo"
 	@echo "  make step2b            - Step 2b: Tempo backend + Grafana datasource"
-	@echo "  (step2c-4: Collector / Loki / Mimir, not implemented yet)"
+	@echo "  make step2c            - Step 2c: OTel Collector (single ingress gateway)"
+	@echo "  (step3-4: Loki / Mimir, not implemented yet)"
 	@echo
 	@echo "Tests (assert state, exit non-zero on failure):"
 	@echo "  make verify            - run every implemented step's checks"
 	@echo "  make verify-step0      - assert the scaffold state"
 	@echo "  make verify-step1      - assert Grafana synced and reachable"
 	@echo "  make verify-step2b     - assert Tempo synced + datasource present"
+	@echo "  make verify-step2c     - assert Collector synced + OTLP ingress up"
 	@echo
 	@echo "Underlying targets:"
 	@echo "  make cluster           - create k3d cluster $(CLUSTER)"
@@ -132,8 +134,25 @@ step2b: bootstrap
 	@echo
 	@$(MAKE) status
 
+## Step 2c: OTel Collector, the single telemetry ingress (gateway). Assumes
+## Step 2b is up. Applies the root app (idempotent); Argo discovers the
+## collector Application and syncs it. Waits for it to go Healthy.
+.PHONY: step2c
+step2c: bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the collector Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/collector >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the collector Application to become Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/collector --timeout=180s
+	@echo
+	@$(MAKE) status
+
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -144,6 +163,8 @@ verify-step2a:
 	@./scripts/verify.sh step2a
 verify-step2b:
 	@./scripts/verify.sh step2b
+verify-step2c:
+	@./scripts/verify.sh step2c
 
 .PHONY: clean
 clean:

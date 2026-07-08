@@ -154,13 +154,46 @@ verify_step2b() {
   assert_contains "Grafana has a Tempo datasource" '"type":"tempo"' "$ds"
 }
 
+verify_step2c() {
+  echo "Step 2c - OTel Collector (single ingress gateway):"
+
+  local appstate
+  appstate=$($KUBECTL -n argocd get application collector \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "collector Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # Gateway is a Deployment. An available replica proves it started and passed
+  # its health_check readiness probe.
+  local avail
+  avail=$($KUBECTL -n observability get deploy otel-collector \
+    -o jsonpath='{.status.availableReplicas}' 2>/dev/null)
+  assert_ge "collector deployment available" 1 "$avail"
+
+  # OTLP ingress is exposed on both gRPC (4317) and HTTP (4318). Apps (Step 2d)
+  # send here; nothing talks to a backend directly (ADR 002).
+  local grpc http
+  grpc=$($KUBECTL -n observability get svc otel-collector \
+    -o jsonpath='{.spec.ports[?(@.port==4317)].port}' 2>/dev/null)
+  assert_eq "collector Service exposes OTLP gRPC 4317" "4317" "$grpc"
+  http=$($KUBECTL -n observability get svc otel-collector \
+    -o jsonpath='{.spec.ports[?(@.port==4318)].port}' 2>/dev/null)
+  assert_eq "collector Service exposes OTLP HTTP 4318" "4318" "$http"
+
+  # The rendered config exports to Tempo. Proves the pipeline is wired without
+  # needing a live trace (that is Step 2e).
+  local cfg
+  cfg=$($KUBECTL -n observability get cm otel-collector -o yaml 2>/dev/null)
+  assert_contains "collector exports to Tempo" 'tempo.observability.svc.cluster.local:4317' "$cfg"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
   step2a) verify_step2a ;;
   step2b) verify_step2b ;;
-  all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|all]" >&2; exit 2 ;;
+  step2c) verify_step2c ;;
+  all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; verify_step2c ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|all]" >&2; exit 2 ;;
 esac
 
 echo
