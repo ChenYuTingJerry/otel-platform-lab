@@ -11,7 +11,10 @@
 CLUSTER      ?= otel-lab
 ARGOCD_NS    ?= argocd
 OBS_NS       ?= observability
+DEMO_NS      ?= demo
 ARGOCD_CHART ?= argo/argo-cd
+IMAGE_NAME   ?= sample-api
+IMAGE_TAG    ?= 0.1.0
 
 .PHONY: help
 help:
@@ -20,6 +23,7 @@ help:
 	@echo "  make step1             - Step 1: bootstrap Grafana via Argo"
 	@echo "  make step2b            - Step 2b: Tempo backend + Grafana datasource"
 	@echo "  make step2c            - Step 2c: OTel Collector (single ingress gateway)"
+	@echo "  make step2d            - Step 2d: auto-instrumentation + sample app"
 	@echo "  (step3-4: Loki / Mimir, not implemented yet)"
 	@echo
 	@echo "Tests (assert state, exit non-zero on failure):"
@@ -28,8 +32,11 @@ help:
 	@echo "  make verify-step1      - assert Grafana synced and reachable"
 	@echo "  make verify-step2b     - assert Tempo synced + datasource present"
 	@echo "  make verify-step2c     - assert Collector synced + OTLP ingress up"
+	@echo "  make verify-step2d     - assert injection + sample app running"
+	@echo "  make verify-step2e     - assert one trace queryable in Tempo"
 	@echo
 	@echo "Underlying targets:"
+	@echo "  make sample-image      - build the sample app image + import into k3d"
 	@echo "  make cluster           - create k3d cluster $(CLUSTER)"
 	@echo "  make argocd            - helm install ArgoCD into ns $(ARGOCD_NS)"
 	@echo "  make bootstrap         - apply the root Application (app-of-apps)"
@@ -151,8 +158,34 @@ step2c: bootstrap
 	@echo
 	@$(MAKE) status
 
+## Build the sample app image and import it into the k3d cluster. No registry:
+## k3d loads the local image so the Deployment (imagePullPolicy IfNotPresent)
+## can run it. Re-run after changing apps/sample-api.
+.PHONY: sample-image
+sample-image:
+	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) apps/sample-api
+	k3d image import $(IMAGE_NAME):$(IMAGE_TAG) -c $(CLUSTER)
+
+## Step 2d: auto-instrumentation + sample app. Builds and imports the image,
+## then applies the root app (idempotent); Argo discovers the otel-injection
+## and sample-app Applications and syncs them. Waits for the app to go Healthy.
+## Assumes Step 2c is up.
+.PHONY: step2d
+step2d: sample-image bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the sample-app Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/sample-app >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the sample-app Application to become Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/sample-app --timeout=180s
+	@echo
+	@$(MAKE) status
+
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -165,6 +198,10 @@ verify-step2b:
 	@./scripts/verify.sh step2b
 verify-step2c:
 	@./scripts/verify.sh step2c
+verify-step2d:
+	@./scripts/verify.sh step2d
+verify-step2e:
+	@./scripts/verify.sh step2e
 
 .PHONY: clean
 clean:

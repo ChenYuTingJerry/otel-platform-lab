@@ -13,4 +13,7 @@ kubeconfig.local
 # Local Argo password dumps (in case we redirect `make argo-password` to a file)
 *.password
 
-# Nothing project-specific to ignore yet, add here as needed
+# Python / uv (sample apps under apps/; the venv is built locally or in Docker)
+.venv/
+__pycache__/
+*.pyc

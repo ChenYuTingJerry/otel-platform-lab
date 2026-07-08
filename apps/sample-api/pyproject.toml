@@ -1,0 +1,11 @@
+[project]
+name = "sample-api"
+version = "0.1.0"
+description = "FastAPI sample service for the otel-platform-lab end-to-end trace check"
+requires-python = ">=3.12"
+# fastapi[standard] pulls in the FastAPI CLI (fastapi run) and uvicorn[standard].
+# No OpenTelemetry packages on purpose: the OTel Operator injects the SDK at pod
+# creation, so instrumentation stays zero-code.
+dependencies = [
+    "fastapi[standard]>=0.115.6",
+]

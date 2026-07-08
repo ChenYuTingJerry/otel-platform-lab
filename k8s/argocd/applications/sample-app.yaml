@@ -1,0 +1,43 @@
+## Argo Application: sample app (Step 2d), a FastAPI service that opts in to
+## auto-instrumentation. It emits the one trace that proves the pipeline works
+## end to end (Step 2e).
+##
+## Its manifests live with the app under apps/sample-api/deploy: the app is
+## treated as its own small project. Argo applies the Deployment and Service
+## from there. The image is not pulled from a registry; `make sample-image`
+## builds it and imports it into k3d, and the Deployment uses
+## imagePullPolicy IfNotPresent.
+##
+## Destination namespace demo, same as the injection templates, so the pod
+## annotation resolves the Instrumentation CR in the same namespace.
+##
+## sync-wave 4: last. Needs the operator (wave 0), the Collector (wave 2) and
+## the Instrumentation CR (wave 3, otel-injection) already in place, so
+## injection works and the exported spans have somewhere to go.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  source:
+    repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+    targetRevision: main
+    path: apps/sample-api/deploy
+    directory:
+      recurse: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,48 @@
+## Argo Application: OTel injection templates (Step 2d).
+##
+## Delivers the Instrumentation CR(s) the operator webhook uses to inject
+## auto-instrumentation into annotated app pods. Kept separate from the
+## deployed components (Grafana, Tempo, the Collector) because these run
+## nothing on their own; they wait for a pod annotation (see docs/adr/010).
+##
+## Raw directory source over k8s/manifests/otel-injection/ with recurse, the
+## same shape as the Tempo datasource source. Adding a language or a sidecar
+## flavor later is a new file in that folder, not a new Application.
+##
+## ServerSideApply: these are operator CRs, and the operator's defaulting
+## webhook adds fields to them. SSA keeps Argo from fighting those fields
+## (see docs/adr/009 and docs/adr/010).
+##
+## Destination namespace demo: injection templates must live in the app's
+## namespace, not observability.
+##
+## sync-wave 3: after the operator CRDs (wave 0) and the Collector (wave 2),
+## and before the sample app (wave 4), so the Instrumentation CR exists when
+## the app pod is created and the webhook looks it up.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-injection
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  source:
+    repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+    targetRevision: main
+    path: k8s/manifests/otel-injection
+    directory:
+      recurse: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

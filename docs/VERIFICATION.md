@@ -41,8 +41,8 @@ Status at a glance:
 | Step 2a — OTel Operator (auto-instrumentation control plane) | Done (verified on k3d) |
 | Step 2b — Tempo backend + Grafana datasource | Done (verified on k3d) |
 | Step 2c — OTel Collector (single ingress gateway) | Done (workload verified on k3d) |
-| Step 2d — Auto-instrumentation + sample app | Not implemented |
-| Step 2e — One trace queryable end to end | Not implemented |
+| Step 2d — Auto-instrumentation + sample app | Done (workload verified on k3d) |
+| Step 2e — One trace queryable end to end | Done (verified on k3d) |
 | Step 3 — Loki (logs pipeline + trace_id to logs pivot) | Not implemented |
 | Step 4 — Mimir (span metrics + direct metrics) | Not implemented |
 
@@ -53,8 +53,8 @@ has no build target of its own: the root app-of-apps picks it up during
 `make step2c` that waits for it to go Healthy.
 
 ```sh
-make clean && make step0 && make step1 && make step2b && make step2c
-make verify        # asserts step0 + step1 + step2a + step2b + step2c
+make clean && make step0 && make step1 && make step2b && make step2c && make step2d
+make verify        # asserts step0 + step1 + step2a..2e
 ```
 
 ---
@@ -178,10 +178,10 @@ Acceptance:
 
 ## Step 2 — OTel Collector + Tempo, traces end to end
 
-Step 2 is split into sub-steps, each verified before the next. The operator
-(2a) is done. The rest are not built yet: they carry acceptance criteria and a
-planned verify target, no commands. The union of the sub-step acceptance boxes
-below is the definition of done for the whole step.
+Step 2 is split into sub-steps, each verified before the next. All are done:
+the operator (2a), Tempo (2b), the Collector (2c), auto-instrumentation and the
+sample app (2d), and one trace end to end (2e). The union of the sub-step
+acceptance boxes below is the definition of done for the whole step.
 
 ### Step 2a — OTel Operator (Done)
 
@@ -311,36 +311,107 @@ Acceptance criteria:
 
 - [x] OTel Collector is the only telemetry ingress.
 
-### Step 2d — Auto-instrumentation + sample app (Not implemented)
+### Step 2d — Auto-instrumentation + sample app (Done)
 
-Create an `Instrumentation` CR and deploy a sample app that opts in via
-annotation. The operator webhook injects an init-container and sets
-`OTEL_EXPORTER_OTLP_ENDPOINT` to the Collector, never to a backend.
+A FastAPI sample app (`apps/sample-api/`, treated as its own small project)
+opts in to zero-code auto-instrumentation with a pod annotation. The operator
+webhook injects a Python SDK init-container at pod creation and sets
+`OTEL_EXPORTER_OTLP_ENDPOINT` to the Collector, never to a backend (ADR 002).
 
-Planned verify target: `make verify-step2d`. It should assert:
+The `Instrumentation` CR is the injection template. It lives in
+`k8s/manifests/otel-injection/`, delivered by the `otel-injection` Application
+(directory source, `ServerSideApply`), into the app namespace `demo` (ADR 010).
+The app is delivered by a second Application, `sample-app`, from
+`apps/sample-api/deploy`. Waves: injection is 3, the app is 4, so the CR exists
+before the pod is created.
 
-- The `Instrumentation` CR present.
-- The sample app pod shows the injected init-container and OTEL env pointing at
-  the Collector.
-- The sample app Running.
+The image is not pulled from a registry. `make sample-image` builds it and
+imports it into k3d; the Deployment uses `imagePullPolicy: IfNotPresent`.
+
+#### Build
+
+```sh
+make step2d       # build+import the image, then Argo syncs injection + app
+```
+
+`make step2d` runs `make sample-image` (docker build + `k3d image import`) then
+applies the root app (idempotent). Argo discovers the `otel-injection` and
+`sample-app` Applications and syncs them. The target waits for `sample-app` to
+go Healthy. Assumes Step 2c is up.
+
+#### Verify
+
+```sh
+make verify-step2d    # asserts the checks below; exits non-zero on failure
+```
+
+It asserts: the `otel-injection` and `sample-app` Applications Synced/Healthy,
+the `Instrumentation` CR present in `demo`, the `sample-api` deployment
+available, the injected init-container
+(`opentelemetry-auto-instrumentation-python`), and the container's
+`OTEL_EXPORTER_OTLP_ENDPOINT` pointing at the Collector. The same checks by
+hand:
+
+```sh
+kubectl -n argocd get application otel-injection sample-app \
+  -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status --no-headers
+kubectl -n demo get instrumentation python
+kubectl -n demo get deploy sample-api                    # READY 1/1
+kubectl -n demo get pod -l app=sample-api \
+  -o jsonpath='{.items[0].spec.initContainers[*].name}'  # opentelemetry-auto-instrumentation-python
+kubectl -n demo get pod -l app=sample-api \
+  -o jsonpath='{range .items[0].spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | grep OTEL_EXPORTER_OTLP_ENDPOINT
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.observability.svc.cluster.local:4318
+```
+
+Note on verification: the workload was verified end to end on k3d by a direct
+smoke test. The image was built and imported, the `Instrumentation` CR and the
+app manifests applied into `demo` by hand, then traffic driven to `/rolldice`
+and the trace read back from Tempo (see Step 2e below). The injected pod showed
+the `opentelemetry-auto-instrumentation-python` init-container and the OTEL
+endpoint pointing at the Collector. `make verify-step2d` exercises the same
+workload through Argo once the manifests are on the tracked branch (`main`).
 
 Acceptance criteria:
 
-- [ ] Zero-code auto-instrumentation injection works.
-- [ ] The sample app sends OTLP to the Collector only, never to a backend directly.
+- [x] Zero-code auto-instrumentation injection works.
+- [x] The sample app sends OTLP to the Collector only, never to a backend directly.
 
-### Step 2e — One trace queryable end to end (Not implemented)
+### Step 2e — One trace queryable end to end (Done)
 
 The real delivery check. Drive traffic to the sample app, then query Tempo
 through Grafana and find the trace. This closes Step 2.
 
-Planned verify target: `make verify-step2` (the full end-to-end check). It
-should send a request to the sample app, then search Tempo (via the Grafana
-datasource proxy or the Tempo API) and assert at least one matching trace.
+#### Verify
+
+```sh
+make verify-step2e    # asserts the checks below; exits non-zero on failure
+```
+
+It drives a few requests to `sample-api.demo` from a short-lived in-cluster
+curl pod, then queries Tempo through the Grafana datasource proxy with the
+TraceQL `{ resource.service.name="sample-api" }` and asserts at least one trace
+comes back (retried, since ingestion is async). The same check by hand:
+
+```sh
+kubectl -n demo run trace-gen --rm -i --restart=Never --image=curlimages/curl:latest --command -- \
+  sh -c 'for i in 1 2 3 4 5; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done'
+
+curl -s -u admin:otel-lab-admin -G \
+  http://localhost:3000/api/datasources/proxy/uid/tempo/api/search \
+  --data-urlencode 'q={ resource.service.name="sample-api" }' --data-urlencode 'limit=5'
+# JSON with a "traces" array; each entry has a "traceID"
+```
+
+Note on verification: verified on k3d during the Step 2d smoke test. The
+returned trace carried `service.name=sample-api`, `telemetry.sdk.language=python`
+(the injected SDK), and `deployment.environment=lab`. That last attribute is
+added by the Collector's `resource` processor, so it proves the span really
+travelled app to Collector to Tempo, not straight to a backend.
 
 Acceptance criteria:
 
-- [ ] A trace from the sample app is queryable in Grafana/Tempo, end to end.
+- [x] A trace from the sample app is queryable in Grafana/Tempo, end to end.
 
 ## Step 3 — Loki, logs pipeline + trace pivot (Not implemented)
 

@@ -1,0 +1,32 @@
+## Instrumentation CR (Step 2d): the Python auto-instrumentation template.
+##
+## The OTel Operator installs the Instrumentation CRD but no instances (see
+## docs/adr/010). This is the first instance we author. It runs nothing on its
+## own; it sits in the app namespace and waits for a pod annotation
+## (instrumentation.opentelemetry.io/inject-python) to reference it. The webhook
+## then injects a Python SDK init-container into that pod.
+##
+## Namespace demo, not observability: injection templates must live in the
+## namespace of the target app pods (docs/adr/010).
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: python
+  namespace: demo
+spec:
+  ## Export to the Collector, the single ingress. Not to Tempo (docs/adr/002).
+  ## Python auto-instrumentation talks OTLP over HTTP, so this is the
+  ## Collector's 4318 port; OTEL_EXPORTER_OTLP_PROTOCOL below matches.
+  exporter:
+    endpoint: http://otel-collector.observability.svc.cluster.local:4318
+  propagators:
+    - tracecontext
+    - baggage
+  ## Sample everything: this is a lab, and we want the one test trace kept.
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+  python:
+    env:
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: http/protobuf

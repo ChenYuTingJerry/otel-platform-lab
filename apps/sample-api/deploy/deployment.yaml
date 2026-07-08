@@ -1,0 +1,52 @@
+## sample-api Deployment (Step 2d).
+##
+## Opts in to zero-code auto-instrumentation with the pod annotation below. The
+## OTel Operator webhook sees it at pod creation, injects a Python SDK
+## init-container, and sets OTEL_EXPORTER_OTLP_ENDPOINT to the Collector (never
+## a backend, see docs/adr/002). The annotation value is the name of the
+## Instrumentation CR in this namespace
+## (k8s/manifests/otel-injection/instrumentation-python.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-api
+  namespace: demo
+  labels:
+    app: sample-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-api
+  template:
+    metadata:
+      labels:
+        app: sample-api
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: "python"
+    spec:
+      containers:
+        - name: sample-api
+          image: sample-api:0.1.0
+          ## The image is imported into k3d, not pulled from a registry.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            ## Pin the service name so the trace is easy to find in Tempo.
+            ## Set explicitly here, so it does not depend on the operator's
+            ## name derivation.
+            - name: OTEL_SERVICE_NAME
+              value: sample-api
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi

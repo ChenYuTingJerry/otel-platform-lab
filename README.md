@@ -5,10 +5,10 @@ single telemetry ingress feeding an LGTM stack (Loki, Grafana, Tempo, Mimir).
 Deployed on a local k3d cluster (Apple Silicon), managed by ArgoCD from
 day one.
 
-Current stage: Step 2 in progress. The OTel Operator (2a), Tempo with its
-Grafana datasource (2b), and the Collector as the single ingress gateway (2c)
-are in; the sample app and end-to-end trace (2d-2e) are next. Loki and Mimir
-land in later steps.
+Current stage: Step 2 done. The OTel Operator (2a), Tempo with its Grafana
+datasource (2b), the Collector as the single ingress gateway (2c), and a
+FastAPI sample app auto-instrumented by the operator (2d) are in, with one
+trace queryable end to end in Grafana (2e). Loki and Mimir land in later steps.
 
 ## Prerequisites
 
@@ -29,6 +29,7 @@ make step0    # scaffold: k3d cluster + ArgoCD
 make step1    # bootstrap Grafana via ArgoCD (also brings up the OTel Operator)
 make step2b   # Tempo backend + its Grafana datasource
 make step2c   # OTel Collector, the single ingress gateway
+make step2d   # sample app + auto-instrumentation, one trace end to end
 ```
 
 - `make step0` runs `make cluster` (k3d cluster `otel-lab`, host ports 3000 for
@@ -52,7 +53,9 @@ k8s/argocd/install/         Helm values for the ArgoCD install itself
 k8s/argocd/root-app.yaml    App-of-apps, applied by `make bootstrap`
 k8s/argocd/applications/    One Argo Application CR per platform component
 k8s/manifests/<component>/  Helm values.yaml files that Argo reads
-apps/                       Sample instrumented services (added in Step 2d)
+apps/sample-api/            FastAPI sample service (Step 2d), its own mini-project:
+                            app code, Dockerfile, and deploy/ manifests
+k8s/manifests/otel-injection/  Operator injection templates (Instrumentation CRs)
 config/                     Reserved. The Collector pipeline lives inline in
                             k8s/manifests/collector/values.yaml, not here.
 docs/adr/                   Architecture decision records
@@ -65,7 +68,7 @@ Each step is verified end-to-end before the next one starts.
 
 - [x] Step 0 - Scaffold: k3d cluster + ArgoCD
 1. [x] Step 1 - Grafana UI reachable via ArgoCD
-2. [ ] Step 2 - OTel Collector + Tempo, traces from a sample app
+2. [x] Step 2 - OTel Collector + Tempo, traces from a sample app
 3. [ ] Step 3 - Loki logs pipeline with trace_id to logs pivot
 4. [ ] Step 4 - Mimir metrics (span metrics + direct)
 

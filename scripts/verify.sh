@@ -186,14 +186,85 @@ verify_step2c() {
   assert_contains "collector exports to Tempo" 'tempo.observability.svc.cluster.local:4317' "$cfg"
 }
 
+verify_step2d() {
+  echo "Step 2d - auto-instrumentation + sample app:"
+
+  # Both Applications Synced/Healthy.
+  local injstate appstate
+  injstate=$($KUBECTL -n argocd get application otel-injection \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "otel-injection Application Synced/Healthy" "Synced/Healthy" "$injstate"
+
+  appstate=$($KUBECTL -n argocd get application sample-app \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "sample-app Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # The Instrumentation CR is present in the app namespace.
+  if $KUBECTL -n demo get instrumentation python >/dev/null 2>&1; then
+    pass "Instrumentation CR present in demo"
+  else
+    fail "Instrumentation CR present in demo"
+  fi
+
+  # The sample app is running.
+  local avail
+  avail=$($KUBECTL -n demo get deploy sample-api \
+    -o jsonpath='{.status.availableReplicas}' 2>/dev/null)
+  assert_ge "sample-api deployment available" 1 "$avail"
+
+  # The webhook injected the auto-instrumentation init-container...
+  local initc
+  initc=$($KUBECTL -n demo get pod -l app=sample-api \
+    -o jsonpath='{.items[0].spec.initContainers[*].name}' 2>/dev/null)
+  assert_contains "auto-instrumentation init-container injected" "opentelemetry-auto-instrumentation" "$initc"
+
+  # ...and pointed the exporter at the Collector, never a backend (ADR 002).
+  local endpoint
+  endpoint=$($KUBECTL -n demo get pod -l app=sample-api \
+    -o jsonpath='{.items[0].spec.containers[0].env[?(@.name=="OTEL_EXPORTER_OTLP_ENDPOINT")].value}' 2>/dev/null)
+  assert_contains "OTEL endpoint points at the Collector" "otel-collector.observability" "$endpoint"
+}
+
+verify_step2e() {
+  echo "Step 2e - one trace queryable end to end:"
+
+  # Drive a few requests so the app emits traces. Short-lived in-cluster pod.
+  if $KUBECTL -n demo run trace-gen --rm -i --restart=Never \
+    --image=curlimages/curl:latest --command -- \
+    sh -c 'for i in 1 2 3 4 5; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done' \
+    >/dev/null 2>&1; then
+    pass "drove traffic to sample-api /rolldice"
+  else
+    fail "drove traffic to sample-api /rolldice"
+  fi
+
+  # Query Tempo through the Grafana datasource proxy. Traces are ingested
+  # asynchronously (Collector batch + Tempo write), so retry a few times.
+  local resp=""
+  for attempt in 1 2 3 4 5 6; do
+    resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
+      "${GRAFANA_URL}/api/datasources/proxy/uid/tempo/api/search" \
+      --data-urlencode 'q={ resource.service.name="sample-api" }' \
+      --data-urlencode 'limit=5' 2>/dev/null)
+    case "$resp" in
+      *'"traceID"'*) break ;;
+    esac
+    sleep 5
+  done
+  assert_contains "Tempo returns a sample-api trace" '"traceID"' "${resp:-}"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
   step2a) verify_step2a ;;
   step2b) verify_step2b ;;
   step2c) verify_step2c ;;
-  all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; verify_step2c ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|all]" >&2; exit 2 ;;
+  step2d) verify_step2d ;;
+  step2e) verify_step2e ;;
+  all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; \
+          verify_step2c; echo; verify_step2d; echo; verify_step2e ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|all]" >&2; exit 2 ;;
 esac
 
 echo
