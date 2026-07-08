@@ -274,6 +274,14 @@ verify_step3() {
   ds=$(curl -s -u "admin:${GRAFANA_PW}" "${GRAFANA_URL}/api/datasources" 2>/dev/null)
   assert_contains "Grafana has a Loki datasource" '"type":"loki"' "$ds"
 
+  # The logs-to-trace derived field must keep its url template. If the '$' is
+  # not escaped as '$$' in the datasource YAML, Grafana's provisioning reads
+  # ${__value.raw} as an env var and blanks it, so "View trace" sends an empty
+  # trace id. Assert the loaded url still carries the template.
+  local lds
+  lds=$(curl -s -u "admin:${GRAFANA_PW}" "${GRAFANA_URL}/api/datasources/uid/loki" 2>/dev/null)
+  assert_contains "Loki trace_id derived field url is set (\$ escaped)" '__value.raw' "$lds"
+
   # Drive traffic so the app emits a log line carrying its trace_id.
   if $KUBECTL -n demo run log-gen --rm -i --restart=Never \
     --image=curlimages/curl:latest --command -- \

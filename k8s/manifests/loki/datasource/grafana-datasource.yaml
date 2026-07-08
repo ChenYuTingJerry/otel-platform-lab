@@ -36,5 +36,8 @@ data:
               matcherType: label
               matcherRegex: trace_id
               datasourceUid: tempo
-              url: '${__value.raw}'
+              # $$ escapes the $, so Grafana's provisioning loader does not read
+              # ${__value.raw} as an env var and blank it out. The derived-field
+              # runtime then fills it with the matched trace_id.
+              url: '$${__value.raw}'
               urlDisplayLabel: View trace
