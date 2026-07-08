@@ -9,6 +9,11 @@
 ## Not a real secret; this is a lab. The URL points at the in-cluster Tempo
 ## Service on its HTTP query port (3200), which is where Grafana's Tempo
 ## datasource sends TraceQL and trace-by-id queries.
+##
+## tracesToLogsV2 is the trace-to-logs pivot (Step 3): from a span, jump to the
+## request's logs in Loki (datasource uid `loki`), matched by trace_id. The
+## logs-to-trace direction lives on the Loki datasource (derivedFields in
+## k8s/manifests/loki/datasource/).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -27,3 +32,15 @@ data:
         url: http://tempo.observability.svc.cluster.local:3200
         isDefault: false
         editable: false
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            # Query Loki by the span's trace_id, within a window around the span.
+            filterByTraceID: true
+            spanStartTimeShift: '-1h'
+            spanEndTimeShift: '1h'
+            # Narrow to the right stream: the trace's service.name maps to Loki's
+            # service_name label (Loki's default OTLP resource mapping).
+            tags:
+              - key: service.name
+                value: service_name

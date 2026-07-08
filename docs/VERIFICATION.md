@@ -43,7 +43,7 @@ Status at a glance:
 | Step 2c — OTel Collector (single ingress gateway) | Done (workload verified on k3d) |
 | Step 2d — Auto-instrumentation + sample app | Done (workload verified on k3d) |
 | Step 2e — One trace queryable end to end | Done (verified on k3d) |
-| Step 3 — Loki (logs pipeline + trace_id to logs pivot) | Not implemented |
+| Step 3 — Loki (logs pipeline + trace correlation both ways) | Done (data path verified on k3d) |
 | Step 4 — Mimir (span metrics + direct metrics) | Not implemented |
 
 A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
@@ -53,8 +53,8 @@ has no build target of its own: the root app-of-apps picks it up during
 `make step2c` that waits for it to go Healthy.
 
 ```sh
-make clean && make step0 && make step1 && make step2b && make step2c && make step2d
-make verify        # asserts step0 + step1 + step2a..2e
+make clean && make step0 && make step1 && make step2b && make step2c && make step2d && make step3
+make verify        # asserts step0 + step1 + step2a..2e + step3
 ```
 
 ---
@@ -413,16 +413,79 @@ Acceptance criteria:
 
 - [x] A trace from the sample app is queryable in Grafana/Tempo, end to end.
 
-## Step 3 — Loki, logs pipeline + trace pivot (Not implemented)
+## Step 3 — Loki, logs pipeline + trace correlation both ways (Done)
 
-Build/Verify commands: TODO when built.
+Loki is the logs backend, deployed as an Argo Application in SingleBinary mode
+(`grafana-community/loki`, see docs/adr/011). The sample app emits its logs as
+OTLP to the Collector, the same path its traces take (see docs/adr/012); the
+Collector's logs pipeline exports them to Loki's native OTLP endpoint. Grafana
+links logs and traces both ways: `trace_id` in a Loki log line jumps to the
+Tempo trace (Loki datasource `derivedFields`), and a Tempo span jumps to the
+request's logs (Tempo datasource `tracesToLogsV2`).
+
+### Build
+
+```sh
+make step3        # applies the root app (idempotent); Argo syncs Loki
+```
+
+The root app-of-apps discovers `k8s/argocd/applications/loki.yaml`, creates the
+`loki` Application, and Argo syncs it: the Loki StatefulSet plus the datasource
+ConfigMap. The target waits for the `loki` Application to go Healthy. Loki is
+sync-wave 1 (a backend, same as Tempo), so it is up before the Collector at
+wave 2. Assumes Step 2 is up: the Collector now also carries logs, and the
+sample app emits them (both land through a re-sync of the collector and
+sample-app Applications once this branch is on `main`).
+
+### Verify
+
+```sh
+make verify-step3    # asserts the checks below; exits non-zero on failure
+```
+
+It asserts: the `loki` Application Synced/Healthy, the Loki StatefulSet ready
+(its readinessProbe hits `/ready` on 3100), a `type: loki` datasource in
+Grafana, and end to end: drive `/rolldice`, then query Loki through the Grafana
+proxy for a `sample-api` log line that carries a `trace_id`. The same checks by
+hand:
+
+```sh
+kubectl -n argocd get application loki \
+  -o custom-columns=SYNC:.status.sync.status,HEALTH:.status.health.status --no-headers
+kubectl -n observability get statefulset loki          # READY 1/1
+curl -s -u admin:otel-lab-admin http://localhost:3000/api/datasources | grep -o '"type":"loki"'
+
+kubectl -n demo run log-gen --rm -i --restart=Never --image=curlimages/curl:latest --command -- \
+  sh -c 'for i in 1 2 3 4 5; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done'
+
+# query_range needs a time window; the `| trace_id != ""` filter is the point.
+END=$(( $(date +%s) * 1000000000 )); START=$(( ($(date +%s) - 3600) * 1000000000 ))
+curl -s -u admin:otel-lab-admin -G \
+  http://localhost:3000/api/datasources/proxy/uid/loki/loki/api/v1/query_range \
+  --data-urlencode 'query={service_name="sample-api"} | trace_id != ""' \
+  --data-urlencode "start=$START" --data-urlencode "end=$END" --data-urlencode 'limit=5'
+# JSON with a "result" stream; the log line reads "rolled a N"
+```
+
+Note on verification: the data path was verified end to end on k3d in an
+isolated namespace (Argo reads `main`, so like Steps 2c/2d the Argo path goes
+green only after push). A Loki + a Collector with the new logs pipeline were
+installed, the app pointed at that Collector, and traffic driven. The log line
+landed in Loki with `service_name=sample-api` and `deployment_environment=lab`
+as index labels (the second from the Collector's `resource` processor, so logs
+are enriched like traces), and `trace_id` as structured metadata (not an index
+label, so no cardinality blow-up). That `trace_id` resolved to a real trace in
+Tempo, which proves the correlation the pivots rely on. `make verify-step3`
+exercises the same path through Argo once the manifests are on `main`.
 
 Acceptance criteria:
 
-- [ ] Loki deployed via an Argo Application.
-- [ ] Logs flow through the Collector (single ingress holds).
-- [ ] Grafana has a Loki datasource; trace_id in a log line pivots to the trace.
-- [ ] Logs carry high-cardinality context (per the signal-routing model).
+- [x] Loki deployed via an Argo Application.
+- [x] Logs flow through the Collector (single ingress holds).
+- [x] Grafana has a Loki datasource; trace_id in a log line pivots to the trace
+  (and a trace pivots back to its logs).
+- [x] Logs carry high-cardinality context (`trace_id`, `span_id`, code location)
+  as structured metadata, while the index labels stay low-cardinality.
 
 ## Step 4 — Mimir, span metrics + direct metrics (Not implemented)
 

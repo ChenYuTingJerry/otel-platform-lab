@@ -30,3 +30,10 @@ spec:
     env:
       - name: OTEL_EXPORTER_OTLP_PROTOCOL
         value: http/protobuf
+      ## Logs (Step 3). Export the app's Python logging records as OTLP, and
+      ## turn on the logging auto-instrumentation so each record is stamped
+      ## with the active trace_id. Same Collector endpoint as traces.
+      - name: OTEL_LOGS_EXPORTER
+        value: otlp
+      - name: OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED
+        value: "true"

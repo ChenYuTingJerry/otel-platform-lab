@@ -1,0 +1,40 @@
+## Grafana datasource for Loki.
+##
+## Ships with the Loki Application, not with Grafana's values, the same pattern
+## as the Tempo datasource: Grafana's sidecar watches for ConfigMaps labelled
+## `grafana_datasource` and loads them at runtime. Each backend brings its own
+## datasource. See docs/adr/007.
+##
+## derivedFields is the logs-to-trace pivot (Step 3). OTLP logs land in Loki
+## with trace_id as structured metadata; the derived field turns that into a
+## link to the Tempo datasource (uid `tempo`), so a trace_id in a log line jumps
+## straight to the trace. The trace-to-logs direction lives on the Tempo
+## datasource (tracesToLogsV2 in k8s/manifests/tempo/datasource/).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-grafana-datasource
+  namespace: observability
+  labels:
+    grafana_datasource: "1"
+data:
+  loki-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        uid: loki
+        access: proxy
+        url: http://loki.observability.svc.cluster.local:3100
+        isDefault: false
+        editable: false
+        jsonData:
+          derivedFields:
+            - name: trace_id
+              # trace_id arrives as structured metadata on OTLP logs, so match
+              # the label, not the log line text.
+              matcherType: label
+              matcherRegex: trace_id
+              datasourceUid: tempo
+              url: '${__value.raw}'
+              urlDisplayLabel: View trace

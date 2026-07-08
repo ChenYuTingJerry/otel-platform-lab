@@ -1,0 +1,52 @@
+## Argo Application: Loki (Step 3), the logs backend.
+##
+## SingleBinary mode, same multi-source shape as Tempo:
+##   source 0 - the Loki Helm chart
+##   source 1 - this Git repo as `$values`, for values.yaml
+##   source 2 - this Git repo again, rendering the raw Grafana datasource
+##              ConfigMap under k8s/manifests/loki/datasource/. The chart has no
+##              extraObjects hook we rely on, so the datasource ships as its own
+##              directory source, same as Tempo.
+##
+## The chart comes from grafana-community, not grafana, for consistency with the
+## Tempo choice and to get the maintained, newer Loki (see docs/adr/011).
+##
+## sync-wave 1: a backend, same wave as Tempo, so both are up before the
+## Collector (wave 2) starts exporting logs to this Loki.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  sources:
+    - repoURL: https://grafana-community.github.io/helm-charts
+      chart: loki
+      targetRevision: 18.4.2
+      helm:
+        releaseName: loki
+        valueFiles:
+          - $values/k8s/manifests/loki/values.yaml
+    - repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+      targetRevision: main
+      ref: values
+    - repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+      targetRevision: main
+      path: k8s/manifests/loki/datasource
+      directory:
+        recurse: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

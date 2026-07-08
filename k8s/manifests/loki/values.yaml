@@ -1,0 +1,74 @@
+## Loki Helm values (SingleBinary mode), read by Argo through the Loki
+## Application CR. Loki is the logs backend for Step 3.
+##
+## Single binary is enough for local k3d: one process holds distributor,
+## ingester, querier, and compactor. Filesystem storage, no object store, no
+## microservices. Same "keep it light" spirit as tempo/values.yaml.
+
+## One monolithic pod, no scalable/microservice components.
+deploymentMode: SingleBinary
+
+loki:
+  ## No multi-tenancy in the lab.
+  auth_enabled: false
+
+  commonConfig:
+    ## One replica, so one copy of each stream.
+    replication_factor: 1
+
+  ## Local filesystem, not object storage.
+  storage:
+    type: filesystem
+
+  ## schema v13 + tsdb is required for structured metadata, which is where
+  ## OTLP puts trace_id. Without it the logs-to-trace pivot has nothing to key
+  ## on.
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+  limits_config:
+    ## Keep trace_id and friends as structured metadata on each log line.
+    allow_structured_metadata: true
+    ## Drop logs after a day. Matches Tempo's retention; keeps disk small.
+    retention_period: 24h
+
+  ## Turn off anonymous usage reporting for the lab.
+  analytics:
+    reporting_enabled: false
+
+singleBinary:
+  replicas: 1
+  ## No persistence. Logs live in an emptyDir; losing them on a pod restart is
+  ## fine here, same choice as Tempo and Grafana.
+  persistence:
+    enabled: false
+
+## Zero out the scalable-mode components; SingleBinary is the only path here.
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+
+## No caches, no bundled object store, no nginx gateway, no self-test pods.
+## The Collector talks to the Loki Service directly.
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+minio:
+  enabled: false
+gateway:
+  enabled: false
+lokiCanary:
+  enabled: false
+test:
+  enabled: false

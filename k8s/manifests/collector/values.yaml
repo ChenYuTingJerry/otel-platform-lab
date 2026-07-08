@@ -79,18 +79,33 @@ config:
           action: upsert
     batch: {}
   exporters:
-    ## Drop the chart's default debug exporter; we export to Tempo only.
+    ## Drop the chart's default debug exporter.
     debug: null
-    otlp/tempo:
+    ## Traces to Tempo over OTLP gRPC. Type is otlp_grpc, not the old otlp
+    ## alias, which the current Collector deprecates.
+    otlp_grpc/tempo:
       endpoint: tempo.observability.svc.cluster.local:4317
+      tls:
+        insecure: true
+    ## Logs to Loki via its native OTLP endpoint (Step 3). otlp_http appends
+    ## /v1/logs to this base. Type is otlp_http, not the old otlphttp alias.
+    ## Apps never address Loki: they send logs as OTLP to this Collector, which
+    ## is the only thing that talks to the backend (see ADR 002 and ADR 012).
+    otlp_http/loki:
+      endpoint: http://loki.observability.svc.cluster.local:3100/otlp
       tls:
         insecure: true
   service:
     pipelines:
-      ## Traces only for now. Logs (Step 3) and metrics (Step 4) come later.
-      logs: null
+      ## Metrics (Step 4) still come later.
       metrics: null
       traces:
         receivers: [otlp]
         processors: [memory_limiter, resource, batch]
-        exporters: [otlp/tempo]
+        exporters: [otlp_grpc/tempo]
+      ## Logs ride the same OTLP-in path as traces. The resource processor
+      ## enriches them too, so logs also carry deployment.environment=lab.
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, resource, batch]
+        exporters: [otlp_http/loki]

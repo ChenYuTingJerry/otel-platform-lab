@@ -24,7 +24,8 @@ help:
 	@echo "  make step2b            - Step 2b: Tempo backend + Grafana datasource"
 	@echo "  make step2c            - Step 2c: OTel Collector (single ingress gateway)"
 	@echo "  make step2d            - Step 2d: auto-instrumentation + sample app"
-	@echo "  (step3-4: Loki / Mimir, not implemented yet)"
+	@echo "  make step3             - Step 3: Loki logs backend (OTLP via the Collector)"
+	@echo "  (step4: Mimir, not implemented yet)"
 	@echo
 	@echo "Tests (assert state, exit non-zero on failure):"
 	@echo "  make verify            - run every implemented step's checks"
@@ -34,6 +35,7 @@ help:
 	@echo "  make verify-step2c     - assert Collector synced + OTLP ingress up"
 	@echo "  make verify-step2d     - assert injection + sample app running"
 	@echo "  make verify-step2e     - assert one trace queryable in Tempo"
+	@echo "  make verify-step3      - assert Loki synced + a log line with trace_id"
 	@echo
 	@echo "Underlying targets:"
 	@echo "  make sample-image      - build the sample app image + import into k3d"
@@ -184,8 +186,26 @@ step2d: sample-image bootstrap
 	@echo
 	@$(MAKE) status
 
+## Step 3: Loki logs backend. Applies the root app (idempotent); Argo discovers
+## the loki Application and syncs it (StatefulSet + datasource). Waits for it to
+## go Healthy. Assumes Step 2 is up (the Collector now also exports logs to Loki,
+## and the sample app emits them as OTLP).
+.PHONY: step3
+step3: bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the loki Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/loki >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the loki Application to become Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/loki --timeout=180s
+	@echo
+	@$(MAKE) status
+
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -202,6 +222,8 @@ verify-step2d:
 	@./scripts/verify.sh step2d
 verify-step2e:
 	@./scripts/verify.sh step2e
+verify-step3:
+	@./scripts/verify.sh step3
 
 .PHONY: clean
 clean:

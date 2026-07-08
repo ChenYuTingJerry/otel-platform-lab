@@ -5,10 +5,10 @@ single telemetry ingress feeding an LGTM stack (Loki, Grafana, Tempo, Mimir).
 Deployed on a local k3d cluster (Apple Silicon), managed by ArgoCD from
 day one.
 
-Current stage: Step 2 done. The OTel Operator (2a), Tempo with its Grafana
-datasource (2b), the Collector as the single ingress gateway (2c), and a
-FastAPI sample app auto-instrumented by the operator (2d) are in, with one
-trace queryable end to end in Grafana (2e). Loki and Mimir land in later steps.
+Current stage: Step 3 done. Traces (Step 2) and logs (Step 3) both flow through
+the Collector to their backends: a FastAPI sample app, auto-instrumented by the
+operator, sends OTLP to the Collector, which routes traces to Tempo and logs to
+Loki. Grafana links logs and traces both ways. Mimir (metrics) lands in Step 4.
 
 ## Prerequisites
 
@@ -30,6 +30,7 @@ make step1    # bootstrap Grafana via ArgoCD (also brings up the OTel Operator)
 make step2b   # Tempo backend + its Grafana datasource
 make step2c   # OTel Collector, the single ingress gateway
 make step2d   # sample app + auto-instrumentation, one trace end to end
+make step3    # Loki logs backend, logs via the Collector, trace correlation
 ```
 
 - `make step0` runs `make cluster` (k3d cluster `otel-lab`, host ports 3000 for
@@ -69,7 +70,7 @@ Each step is verified end-to-end before the next one starts.
 - [x] Step 0 - Scaffold: k3d cluster + ArgoCD
 1. [x] Step 1 - Grafana UI reachable via ArgoCD
 2. [x] Step 2 - OTel Collector + Tempo, traces from a sample app
-3. [ ] Step 3 - Loki logs pipeline with trace_id to logs pivot
+3. [x] Step 3 - Loki logs pipeline with trace_id to logs pivot
 4. [ ] Step 4 - Mimir metrics (span metrics + direct)
 
 ## Design constraints (deliberate)

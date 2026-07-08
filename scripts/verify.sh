@@ -254,6 +254,57 @@ verify_step2e() {
   assert_contains "Tempo returns a sample-api trace" '"traceID"' "${resp:-}"
 }
 
+verify_step3() {
+  echo "Step 3 - Loki logs pipeline + trace correlation:"
+
+  local appstate
+  appstate=$($KUBECTL -n argocd get application loki \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "loki Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # Loki runs as a StatefulSet. Its readinessProbe hits /ready on 3100, so a
+  # ready replica already proves /ready responds.
+  local ready
+  ready=$($KUBECTL -n observability get statefulset loki \
+    -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  assert_ge "loki StatefulSet ready (readinessProbe hits /ready)" 1 "$ready"
+
+  # The datasource sidecar loaded the Loki datasource into Grafana.
+  local ds
+  ds=$(curl -s -u "admin:${GRAFANA_PW}" "${GRAFANA_URL}/api/datasources" 2>/dev/null)
+  assert_contains "Grafana has a Loki datasource" '"type":"loki"' "$ds"
+
+  # Drive traffic so the app emits a log line carrying its trace_id.
+  if $KUBECTL -n demo run log-gen --rm -i --restart=Never \
+    --image=curlimages/curl:latest --command -- \
+    sh -c 'for i in 1 2 3 4 5; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done' \
+    >/dev/null 2>&1; then
+    pass "drove traffic to sample-api /rolldice"
+  else
+    fail "drove traffic to sample-api /rolldice"
+  fi
+
+  # Query Loki through the Grafana proxy for a sample-api log line that carries
+  # a trace_id (kept as structured metadata). The `| trace_id != ""` filter is
+  # the whole point: it proves the log-to-trace pivot has something to key on.
+  # Retry, since ingestion is async.
+  local start end resp=""
+  end=$(( $(date +%s) * 1000000000 ))
+  start=$(( ($(date +%s) - 3600) * 1000000000 ))
+  for attempt in 1 2 3 4 5 6; do
+    resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
+      "${GRAFANA_URL}/api/datasources/proxy/uid/loki/loki/api/v1/query_range" \
+      --data-urlencode 'query={service_name="sample-api"} | trace_id != ""' \
+      --data-urlencode "start=${start}" --data-urlencode "end=${end}" \
+      --data-urlencode 'limit=5' 2>/dev/null)
+    case "$resp" in
+      *'rolled a'*) break ;;
+    esac
+    sleep 5
+  done
+  assert_contains "Loki has a sample-api log line with a trace_id" 'rolled a' "${resp:-}"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
@@ -262,9 +313,10 @@ case "${1:-all}" in
   step2c) verify_step2c ;;
   step2d) verify_step2d ;;
   step2e) verify_step2e ;;
+  step3)  verify_step3 ;;
   all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; \
-          verify_step2c; echo; verify_step2d; echo; verify_step2e ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|all]" >&2; exit 2 ;;
+          verify_step2c; echo; verify_step2d; echo; verify_step2e; echo; verify_step3 ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|all]" >&2; exit 2 ;;
 esac
 
 echo
