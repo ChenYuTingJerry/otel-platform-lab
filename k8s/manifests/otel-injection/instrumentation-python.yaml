@@ -43,3 +43,10 @@ spec:
       ## now; Step 4 switches it back on.
       - name: OTEL_METRICS_EXPORTER
         value: none
+      ## Do not trace the readiness/liveness probe. The kubelet hits /healthz
+      ## every few seconds, which floods Tempo with low-value spans and buries
+      ## real traffic. Pod health is observed through k8s probes and metrics,
+      ## not through traces of the health endpoint. Exclude it at the source so
+      ## the span is never created (cheaper than dropping it at the Collector).
+      - name: OTEL_PYTHON_EXCLUDED_URLS
+        value: healthz
