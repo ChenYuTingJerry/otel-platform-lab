@@ -37,3 +37,9 @@ spec:
         value: otlp
       - name: OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED
         value: "true"
+      ## Metrics come in Step 4 (Mimir). Until the Collector has a metrics
+      ## pipeline, the SDK's default OTLP metrics export just gets 404s and
+      ## logs an error every interval, which spams the logs. Turn it off for
+      ## now; Step 4 switches it back on.
+      - name: OTEL_METRICS_EXPORTER
+        value: none
