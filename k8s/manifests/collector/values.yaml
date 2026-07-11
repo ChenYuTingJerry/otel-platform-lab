@@ -39,6 +39,42 @@ presets:
   kubernetesAttributes:
     enabled: false
 
+## Step 6a: platform self-health. The k8s_cluster receiver (added below) watches
+## the API server for workload state, which needs cluster-wide read RBAC. The
+## chart's serviceAccount (created by default) gets this ClusterRole bound to it.
+## These are the standard k8s_cluster read rules from the receiver's docs, trimmed
+## to what we watch (workloads + nodes + namespaces + quotas + HPAs). No write
+## verbs: the receiver only lists and watches.
+clusterRole:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources:
+        - events
+        - namespaces
+        - namespaces/status
+        - nodes
+        - nodes/spec
+        - pods
+        - pods/status
+        - replicationcontrollers
+        - replicationcontrollers/status
+        - resourcequotas
+        - services
+      verbs: [get, list, watch]
+    - apiGroups: [apps]
+      resources: [daemonsets, deployments, replicasets, statefulsets]
+      verbs: [get, list, watch]
+    - apiGroups: [extensions]
+      resources: [daemonsets, deployments, replicasets]
+      verbs: [get, list, watch]
+    - apiGroups: [batch]
+      resources: [jobs, cronjobs]
+      verbs: [get, list, watch]
+    - apiGroups: [autoscaling]
+      resources: [horizontalpodautoscalers]
+      verbs: [get, list, watch]
+
 ## The chart opens Jaeger and Zipkin ports on the Service by default. We only
 ## accept OTLP, so disable them. OTLP gRPC (4317) and HTTP (4318) stay on.
 ports:
@@ -66,6 +102,21 @@ config:
           endpoint: 0.0.0.0:4317
         http:
           endpoint: 0.0.0.0:4318
+    ## Step 6a: platform self-health. A single cluster-wide receiver that watches
+    ## the API server and emits workload state as OTLP metrics: k8s_deployment_
+    ## available/desired, k8s_statefulset_ready_pods/desired_pods, k8s_container_
+    ## restarts, k8s_pod_phase, and so on. This is the OTLP-native way to watch
+    ## "is every service healthy" without scraping: no kube-state-metrics, no
+    ## Prometheus receiver. It replaces kube-state-metrics for our needs.
+    ##
+    ## It is cluster-wide (not node-local), so it fits the existing single gateway
+    ## Deployment and needs no DaemonSet. Node-local receivers (host_metrics,
+    ## kubelet_stats) would need a DaemonSet agent tier; that is deferred (ADR 009
+    ## revisit trigger, ADR 018). RBAC for this receiver is the clusterRole above.
+    k8s_cluster:
+      collection_interval: 30s
+      node_conditions_to_report: [Ready, MemoryPressure]
+      allocatable_types_to_report: [cpu, memory]
   processors:
     ## memory_limiter first: under memory pressure it refuses data so
     ## backpressure reaches the receiver, instead of the pod being OOM-killed.
@@ -159,12 +210,16 @@ config:
         receivers: [otlp]
         processors: [memory_limiter, resource, batch]
         exporters: [otlp_http/loki]
-      ## Metrics have two sources (Step 4):
-      ##   otlp         - the app's own SDK metrics, the direct path
-      ##   span_metrics - RED metrics derived from the traces pipeline above
-      ## Both get the resource processor, so metrics carry
-      ## deployment.environment=lab like traces and logs do.
+      ## Metrics have three sources:
+      ##   otlp         - the app's own SDK metrics, the direct path (Step 4)
+      ##   span_metrics - RED metrics derived from the traces pipeline above (Step 4)
+      ##   k8s_cluster  - workload health from the API server (Step 6a)
+      ## All get the resource processor, so metrics carry deployment.environment=
+      ## lab like traces and logs do. The k8s_cluster metrics also carry namespace/
+      ## workload/pod identity, but those are OTLP resource attributes; Mimir keeps
+      ## them out of labels unless promoted, so the identity is surfaced by
+      ## promote_otel_resource_attributes in the Mimir values (see docs/adr/018).
       metrics:
-        receivers: [otlp, span_metrics]
+        receivers: [otlp, span_metrics, k8s_cluster]
         processors: [memory_limiter, resource, batch]
         exporters: [otlp_http/mimir]

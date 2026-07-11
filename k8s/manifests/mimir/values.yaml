@@ -118,13 +118,23 @@ mimir:
       ## Under OTLP, Mimir does not turn resource attributes into metric labels.
       ## It maps only service.name -> job and service.instance.id -> instance;
       ## everything else lands in a `target_info` series you have to join
-      ## against. Promote the one attribute the Collector's resource processor
-      ## adds, so metrics carry deployment.environment=lab as a real label, the
-      ## way traces and logs already do. See docs/adr/014.
+      ## against. Promote the attribute the Collector's resource processor adds,
+      ## so metrics carry deployment.environment=lab as a real label, the way
+      ## traces and logs already do. See docs/adr/014.
+      ##
+      ## Step 6a adds the k8s.* names. The k8s_cluster receiver (docs/adr/018) puts
+      ## workload identity (namespace, deployment/statefulset, pod, container) on
+      ## its metrics as OTLP resource attributes, so the same rule applies: without
+      ## promotion every k8s_deployment_available series collapses to one unlabeled
+      ## series (proven with a smoke test) and the platform-health alerts cannot
+      ## tell which workload is down. Promoting these makes them real labels
+      ## (k8s.namespace.name -> k8s_namespace_name, and so on). No cardinality cost
+      ## on the app metrics: they already carry per-pod `instance`, so pod.name is
+      ## functionally redundant, not a multiplier.
       ##
       ## This takes a comma-separated string, not a YAML list. A list fails to
       ## parse ("cannot unmarshal !!seq into string"). Still experimental.
-      promote_otel_resource_attributes: "deployment.environment"
+      promote_otel_resource_attributes: "deployment.environment,k8s.namespace.name,k8s.deployment.name,k8s.statefulset.name,k8s.pod.name,k8s.container.name"
 
       ## Add the Prometheus-style suffixes when translating OTLP metrics: a
       ## `_total` on counters and the unit on the name. Off by default in Mimir,

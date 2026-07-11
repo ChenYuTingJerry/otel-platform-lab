@@ -1,0 +1,153 @@
+## Platform-health dashboard (Step 6a), shipped as code.
+##
+## Same pattern as the RED dashboard: a ConfigMap labelled grafana_dashboard,
+## picked up by Grafana's dashboards sidecar (ADR-007). The panels read the
+## k8s_cluster metrics the Collector pushes to Mimir (docs/adr/018), so the
+## dashboard shows the same workload state the platform-health alerts evaluate.
+## Datasource is the Mimir datasource, uid `mimir`. Scope matches the alerts:
+## the namespaces that hold services we care about (observability, demo, argocd).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-health-dashboard
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+data:
+  platform-health-dashboard.json: |
+    {
+      "uid": "platform-health",
+      "title": "Platform Health",
+      "tags": ["otel-lab", "platform"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "time": { "from": "now-6h", "to": "now" },
+      "refresh": "30s",
+      "annotations": { "list": [] },
+      "templating": { "list": [] },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Unavailable workloads",
+          "description": "Deployments or StatefulSets with fewer available/ready pods than desired.",
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "(count(k8s_deployment_available{k8s_namespace_name=~\"observability|demo|argocd\"} < k8s_deployment_desired{k8s_namespace_name=~\"observability|demo|argocd\"}) or vector(0)) + (count(k8s_statefulset_ready_pods{k8s_namespace_name=~\"observability|demo|argocd\"} < k8s_statefulset_desired_pods{k8s_namespace_name=~\"observability|demo|argocd\"}) or vector(0))",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Container restarts (15m)",
+          "description": "Total container restarts across watched namespaces in the last 15 minutes.",
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "red", "value": 3 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "sum(increase(k8s_container_restarts{k8s_namespace_name=~\"observability|demo|argocd\"}[15m])) or vector(0)",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Deployment replicas: available vs desired",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "k8s_deployment_available{k8s_namespace_name=~\"observability|demo|argocd\"}",
+              "legendFormat": "{{k8s_namespace_name}}/{{k8s_deployment_name}} available"
+            },
+            {
+              "refId": "B",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "k8s_deployment_desired{k8s_namespace_name=~\"observability|demo|argocd\"}",
+              "legendFormat": "{{k8s_namespace_name}}/{{k8s_deployment_name}} desired"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "StatefulSet ready vs desired pods",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "k8s_statefulset_ready_pods{k8s_namespace_name=~\"observability|demo|argocd\"}",
+              "legendFormat": "{{k8s_namespace_name}}/{{k8s_statefulset_name}} ready"
+            },
+            {
+              "refId": "B",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "k8s_statefulset_desired_pods{k8s_namespace_name=~\"observability|demo|argocd\"}",
+              "legendFormat": "{{k8s_namespace_name}}/{{k8s_statefulset_name}} desired"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Container restarts over 15m (by pod)",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "increase(k8s_container_restarts{k8s_namespace_name=~\"observability|demo|argocd\"}[15m])",
+              "legendFormat": "{{k8s_namespace_name}}/{{k8s_pod_name}} ({{k8s_container_name}})"
+            }
+          ]
+        }
+      ]
+    }

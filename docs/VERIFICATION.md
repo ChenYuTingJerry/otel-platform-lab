@@ -46,6 +46,8 @@ Status at a glance:
 | Step 3 — Loki (logs pipeline + trace correlation both ways) | Done (data path verified on k3d) |
 | Step 4a — Mimir backend + Grafana datasource | Done (verified on k3d via Argo) |
 | Step 4b — Metrics pipeline (span metrics + direct metrics) | Done (verified on k3d via Argo) |
+| Step 5 — App RED alerting (ruler + Alertmanager) + RED dashboard | Done (verified on k3d via Argo) |
+| Step 6a — Platform self-health (k8s_cluster metrics + alerts + dashboard) | Staged (rules unit-tested, metric shape smoke-verified; Argo verify post-merge) |
 
 A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
 has no build target of its own: the root app-of-apps picks it up during
@@ -55,7 +57,8 @@ has no build target of its own: the root app-of-apps picks it up during
 
 ```sh
 make clean && make step0 && make step1 && make step2b && make step2c && make step2d && make step3 && make step4a && make step4b
-make verify        # asserts step0 + step1 + step2a..2e + step3 + step4a + step4b
+make step5a && make test-rules && make step5b && make step5c && make step5d && make step6a
+make verify        # asserts step0 + step1 + step2a..2e + step3 + step4a..b + step5a..d + step6a
 ```
 
 ---
@@ -684,3 +687,83 @@ Acceptance criteria:
 - [x] RED rules loaded into the ruler under tenant `anonymous`, unit-tested with `promtool`.
 - [x] Alerts route through Alertmanager to the in-cluster webhook sink.
 - [x] The RED dashboard loads into Grafana as code (dashboards sidecar).
+
+---
+
+## Step 6a — Platform self-health (k8s_cluster metrics + alerts + dashboard) (Staged)
+
+Step 5 watches the app. Step 6a watches the platform's own services: alert when
+any important service is down or crash-looping. The signal is the Collector's
+`k8s_cluster` receiver, which watches the Kubernetes API server and emits workload
+state (`k8s_deployment_available`/`desired`, `k8s_statefulset_ready_pods`/
+`desired_pods`, `k8s_container_restarts`) as OTLP metrics into Mimir. This is
+OTLP-native: no scrape path, no kube-state-metrics, and it stays on the existing
+single gateway Deployment (no DaemonSet). See `docs/adr/018`.
+
+No new Argo Application. The change edits four existing releases: the collector
+gains the receiver + a read-only ClusterRole, Mimir promotes the `k8s.*` resource
+attributes to labels, `mimir-rules` gains a second rules ConfigMap (loaded by the
+same PostSync Job as a separate `platform-health` ruler namespace), and
+`grafana-dashboards` gains the platform-health dashboard. Alerts reuse the Step 5
+path (ruler → Alertmanager catch-all → alert-sink).
+
+### Build
+
+```sh
+make test-rules   # unit-test the RED + platform rules with promtool, locally
+make step6a       # Argo re-syncs collector, mimir, mimir-rules, grafana-dashboards
+```
+
+### Verify
+
+```sh
+make verify-step6a
+```
+
+`verify-step6a` asserts the `collector` Application Synced/Healthy, the ClusterRole
+binding targets the collector ServiceAccount, that `k8s_deployment_available` is
+queryable in Mimir **and carries the promoted `k8s_deployment_name` label** (proof
+the promotion worked), that the ruler lists the `platform_health_alerts` group and
+the `PlatformDeploymentUnavailable` alert, and that the dashboard imported at
+`uid platform-health`. The same checks by hand:
+
+```sh
+# Workload metrics reached Mimir with real workload identity as labels:
+curl -s -u admin:otel-lab-admin -G \
+  http://localhost:3000/api/datasources/proxy/uid/mimir/api/v1/query \
+  --data-urlencode 'query=k8s_deployment_available{k8s_namespace_name="observability"}' | grep -o '"k8s_deployment_name"'
+
+# Platform alerts registered in the ruler:
+curl -s -u admin:otel-lab-admin \
+  http://localhost:3000/api/datasources/proxy/uid/mimir/api/v1/rules | grep -o '"name":"PlatformDeploymentUnavailable"'
+
+# Dashboard imported:
+curl -s -u admin:otel-lab-admin http://localhost:3000/api/dashboards/uid/platform-health | grep -o '"uid":"platform-health"'
+```
+
+Firing a real platform alert end to end is a manual check, like Step 5. Scale a
+watched Deployment to break its replica count, wait past the 5m `for`, and tail
+the sink:
+
+```sh
+kubectl -n observability scale deploy/alert-sink --replicas=0   # then restore to 1
+kubectl -n observability logs -f deploy/alert-sink              # PlatformDeploymentUnavailable arrives as JSON
+```
+
+Note on verification: pre-merge, two things are proven without touching the live
+managed config. `make test-rules` passes (the three platform rules fire as
+expected). And a throwaway collector with only the `k8s_cluster` receiver, run in
+an isolated namespace exporting to the real Mimir, confirmed the exact metric names
+and that the workload-identity attributes are resource attributes that collapse to
+one unlabeled series unless promoted (which is why the Mimir promotion is part of
+this step). The Argo-path checks in `verify-step6a` are inherently post-merge
+(Argo syncs from `main`), so they run green only after the push. Marked Staged
+until then.
+
+Acceptance criteria:
+
+- [x] `k8s_cluster` receiver on the gateway Collector, cluster-wide, no DaemonSet.
+- [x] Platform rules unit-tested with `promtool` (deployment/statefulset/restart).
+- [ ] Workload metrics land in Mimir with promoted labels (post-merge, `verify-step6a`).
+- [ ] Platform alerts loaded in the ruler and route to the sink (post-merge).
+- [ ] The platform-health dashboard loads into Grafana as code (post-merge).

@@ -39,11 +39,21 @@ spec:
             - load
             - --address=http://mimir-gateway.observability.svc.cluster.local
             - --id=anonymous
+            # Two files, two ruler namespaces: `red-alerts` (app RED, Step 5) and
+            # `platform-health` (platform self-health, Step 6a). mimirtool derives
+            # the namespace from the filename and upserts each independently, so the
+            # two sets coexist and re-running stays idempotent.
             - /rules/red-alerts.yaml
+            - /rules-platform/platform-health.yaml
           volumeMounts:
             - name: rules
               mountPath: /rules
+            - name: rules-platform
+              mountPath: /rules-platform
       volumes:
         - name: rules
           configMap:
             name: mimir-red-rules
+        - name: rules-platform
+          configMap:
+            name: mimir-platform-rules

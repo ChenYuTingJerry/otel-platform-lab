@@ -1,0 +1,70 @@
+# Platform self-health alerts (Step 6a) for the Mimir ruler, as code.
+#
+# Separate from the app RED rules (configmap.yaml): those watch the sample app's
+# request stream; these watch whether the platform's own services are running.
+# Kept in its own ConfigMap so ownership is clear, and loaded as its own ruler
+# namespace (mimirtool derives the namespace from the filename, so this becomes
+# `platform-health`, alongside `red-alerts`). The load Job mounts both.
+#
+# Data source: the Collector's k8s_cluster receiver (docs/adr/018), which watches
+# the API server and emits workload state as OTLP metrics. The metric names below
+# were confirmed against a live Mimir with a smoke test, not guessed. The
+# namespace/workload/pod labels exist because the Mimir values promote the
+# matching k8s.* resource attributes (docs/adr/014, docs/adr/018).
+#
+# `make test-rules` unit-tests these with promtool from tests/platform-health_test.yaml.
+#
+# Scope: only the namespaces that hold services we care about
+# (observability = the platform, demo = the app, argocd = the GitOps engine).
+# This keeps kube-system churn (coredns, local-path, etc.) out of the alerts.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-platform-rules
+  namespace: observability
+data:
+  platform-health.yaml: |
+    groups:
+      - name: platform_health_alerts
+        rules:
+          # A Deployment has fewer available replicas than it wants, for 5m.
+          # `available < desired` matches one-to-one on the shared labels
+          # (k8s_namespace_name, k8s_deployment_name), so the result keeps that
+          # workload identity and $value is the available count.
+          - alert: PlatformDeploymentUnavailable
+            expr: |
+              k8s_deployment_available{k8s_namespace_name=~"observability|demo|argocd"}
+                < k8s_deployment_desired{k8s_namespace_name=~"observability|demo|argocd"}
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Deployment {{ $labels.k8s_namespace_name }}/{{ $labels.k8s_deployment_name }} is missing replicas"
+              description: "{{ $labels.k8s_namespace_name }}/{{ $labels.k8s_deployment_name }} has only {{ $value }} replica(s) available, fewer than desired, for 5m."
+
+          # Same idea for StatefulSets (Mimir ingester/alertmanager, Loki, Tempo).
+          # The chart runs those as StatefulSets, which report ready_pods and
+          # desired_pods rather than available/desired.
+          - alert: PlatformStatefulSetUnavailable
+            expr: |
+              k8s_statefulset_ready_pods{k8s_namespace_name=~"observability|demo|argocd"}
+                < k8s_statefulset_desired_pods{k8s_namespace_name=~"observability|demo|argocd"}
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "StatefulSet {{ $labels.k8s_namespace_name }}/{{ $labels.k8s_statefulset_name }} is missing pods"
+              description: "{{ $labels.k8s_namespace_name }}/{{ $labels.k8s_statefulset_name }} has only {{ $value }} ready pod(s), fewer than desired, for 5m."
+
+          # A container is crash-looping: more than 2 restarts in the last 15m.
+          # k8s_container_restarts is a cumulative gauge; increase() handles the
+          # reset when a pod is replaced (a new pod name starts a fresh series).
+          # No $value in the text: increase() extrapolates to a non-round number.
+          - alert: PlatformContainerRestarting
+            expr: |
+              increase(k8s_container_restarts{k8s_namespace_name=~"observability|demo|argocd"}[15m]) > 2
+            labels:
+              severity: warning
+            annotations:
+              summary: "Container {{ $labels.k8s_namespace_name }}/{{ $labels.k8s_pod_name }} ({{ $labels.k8s_container_name }}) is restarting"
+              description: "{{ $labels.k8s_namespace_name }}/{{ $labels.k8s_pod_name }} container {{ $labels.k8s_container_name }} restarted more than twice in 15m; it is likely crash-looping."

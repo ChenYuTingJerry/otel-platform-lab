@@ -18,5 +18,6 @@ kubeconfig.local
 __pycache__/
 *.pyc
 
-# Transient promtool input rendered from the rules ConfigMap by `make test-rules`
+# Transient promtool input rendered from the rules ConfigMaps by `make test-rules`
 k8s/manifests/mimir/rules/tests/red-alerts.rendered.yaml
+k8s/manifests/mimir/rules/tests/platform-health.rendered.yaml

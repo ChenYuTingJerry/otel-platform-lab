@@ -1,0 +1,70 @@
+# promtool unit tests for the platform-health rules. Run locally (or in CI) with:
+#   make test-rules
+# The rules live inline in ../configmap-platform.yaml (the single source). The
+# make target extracts that data key into platform-health.rendered.yaml (transient,
+# gitignored) next to this file, then runs promtool. So this checks exactly what
+# the ruler loads.
+rule_files:
+  - platform-health.rendered.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # Deployment down: the collector wants 1 replica but 0 are available. After the
+  # 5m `for`, PlatformDeploymentUnavailable fires with the workload identity.
+  - interval: 1m
+    input_series:
+      - series: 'k8s_deployment_available{k8s_namespace_name="observability", k8s_deployment_name="otel-collector"}'
+        values: "0+0x10"
+      - series: 'k8s_deployment_desired{k8s_namespace_name="observability", k8s_deployment_name="otel-collector"}'
+        values: "1+0x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PlatformDeploymentUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              k8s_namespace_name: observability
+              k8s_deployment_name: otel-collector
+            exp_annotations:
+              summary: "Deployment observability/otel-collector is missing replicas"
+              description: "observability/otel-collector has only 0 replica(s) available, fewer than desired, for 5m."
+
+  # StatefulSet down: a Mimir ingester wants 1 pod, 0 ready. After 5m,
+  # PlatformStatefulSetUnavailable fires.
+  - interval: 1m
+    input_series:
+      - series: 'k8s_statefulset_ready_pods{k8s_namespace_name="observability", k8s_statefulset_name="mimir-ingester-zone-a"}'
+        values: "0+0x10"
+      - series: 'k8s_statefulset_desired_pods{k8s_namespace_name="observability", k8s_statefulset_name="mimir-ingester-zone-a"}'
+        values: "1+0x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PlatformStatefulSetUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              k8s_namespace_name: observability
+              k8s_statefulset_name: mimir-ingester-zone-a
+            exp_annotations:
+              summary: "StatefulSet observability/mimir-ingester-zone-a is missing pods"
+              description: "observability/mimir-ingester-zone-a has only 0 ready pod(s), fewer than desired, for 5m."
+
+  # Crash loop: a container's cumulative restart count climbs by 1/min, so
+  # increase(...[15m]) is ~15 (> 2) and PlatformContainerRestarting fires.
+  - interval: 1m
+    input_series:
+      - series: 'k8s_container_restarts{k8s_namespace_name="demo", k8s_pod_name="sample-api-6d4f", k8s_container_name="sample-api"}'
+        values: "0+1x16"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PlatformContainerRestarting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              k8s_namespace_name: demo
+              k8s_pod_name: sample-api-6d4f
+              k8s_container_name: sample-api
+            exp_annotations:
+              summary: "Container demo/sample-api-6d4f (sample-api) is restarting"
+              description: "demo/sample-api-6d4f container sample-api restarted more than twice in 15m; it is likely crash-looping."

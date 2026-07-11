@@ -515,6 +515,61 @@ verify_step5d() {
   assert_contains "RED dashboard imported (uid app-red)" '"uid":"app-red"' "$dash_resp"
 }
 
+verify_step6a() {
+  echo "Step 6a - platform self-health (k8s_cluster metrics + alerts + dashboard):"
+
+  # The collector now carries the k8s_cluster receiver + its ClusterRole. Argo
+  # syncs it on the existing collector Application (no new Application).
+  local appstate
+  appstate=$($KUBECTL -n argocd get application collector \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "collector Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # The ClusterRole + binding exist and target the collector's ServiceAccount, so
+  # the receiver can actually list/watch the API server.
+  local crb_sa
+  crb_sa=$($KUBECTL get clusterrolebinding otel-collector \
+    -o jsonpath='{.subjects[0].name}' 2>/dev/null)
+  assert_eq "collector ClusterRoleBinding targets its ServiceAccount" "otel-collector" "$crb_sa"
+
+  # k8s_cluster metrics reached Mimir AND carry promoted workload identity. The
+  # collector watches the API server continuously, so this needs no traffic, but
+  # the OTLP export + ingest is async, so retry. Asserting the k8s_deployment_name
+  # label is present proves promote_otel_resource_attributes worked (without it the
+  # series collapses to a single unlabeled one). See docs/adr/018.
+  local wl_resp="empty"
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    wl_resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
+      "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/query" \
+      --data-urlencode 'query=k8s_deployment_available{k8s_namespace_name="observability"}' 2>/dev/null)
+    case "$wl_resp" in *'"k8s_deployment_name"'*) break ;; *) wl_resp="empty" ;; esac
+    sleep 5
+  done
+  assert_contains "Mimir returns k8s_deployment_available for observability" '"metric"' "$wl_resp"
+  assert_contains "the series carries the promoted k8s_deployment_name label" \
+    '"k8s_deployment_name"' "$wl_resp"
+
+  # The ruler loaded the platform-health group alongside the RED rules.
+  local rules_resp
+  rules_resp=$(curl -s -u "admin:${GRAFANA_PW}" \
+    "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/rules" 2>/dev/null)
+  assert_contains "ruler has the platform_health_alerts group" \
+    '"name":"platform_health_alerts"' "$rules_resp"
+  assert_contains "ruler has the PlatformDeploymentUnavailable alert" \
+    '"name":"PlatformDeploymentUnavailable"' "$rules_resp"
+
+  # The platform-health dashboard imported into Grafana.
+  local dash_resp="empty"
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    dash_resp=$(curl -s -u "admin:${GRAFANA_PW}" \
+      "${GRAFANA_URL}/api/dashboards/uid/platform-health" 2>/dev/null)
+    case "$dash_resp" in *'"uid":"platform-health"'*) break ;; *) dash_resp="empty" ;; esac
+    sleep 5
+  done
+  assert_contains "platform-health dashboard imported (uid platform-health)" \
+    '"uid":"platform-health"' "$dash_resp"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
@@ -530,13 +585,15 @@ case "${1:-all}" in
   step5b) verify_step5b ;;
   step5c) verify_step5c ;;
   step5d) verify_step5d ;;
+  step6a) verify_step6a ;;
   injection) verify_injection ;;
   all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; \
           verify_step2c; echo; verify_step2d; echo; verify_step2e; echo; verify_step3; echo; \
           verify_step4a; echo; verify_step4b; echo; \
           verify_step5a; echo; verify_step5b; echo; verify_step5c; echo; verify_step5d; echo; \
+          verify_step6a; echo; \
           verify_injection ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|step5a|step5b|step5c|step5d|injection|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|step5a|step5b|step5c|step5d|step6a|injection|all]" >&2; exit 2 ;;
 esac
 
 echo

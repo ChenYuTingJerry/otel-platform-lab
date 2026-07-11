@@ -31,6 +31,7 @@ help:
 	@echo "  make step5b            - Step 5b: RED rules + load them into the ruler"
 	@echo "  make step5c            - Step 5c: webhook sink for fired alerts"
 	@echo "  make step5d            - Step 5d: dashboards sidecar + RED dashboard"
+	@echo "  make step6a            - Step 6a: platform self-health (k8s_cluster + alerts + dashboard)"
 	@echo
 	@echo "Tests (assert state, exit non-zero on failure):"
 	@echo "  make verify            - run every implemented step's checks"
@@ -47,7 +48,8 @@ help:
 	@echo "  make verify-step5b     - assert the RED rules load and the ruler evaluates them"
 	@echo "  make verify-step5c     - assert the webhook sink is up and the AM path is reachable"
 	@echo "  make verify-step5d     - assert the RED dashboard loaded into Grafana"
-	@echo "  make test-rules        - unit-test the RED rules with promtool (local, no cluster)"
+	@echo "  make verify-step6a     - assert k8s_cluster metrics, platform alerts + dashboard"
+	@echo "  make test-rules        - unit-test the RED + platform rules with promtool (local)"
 	@echo "  make verify-injection  - assert the webhook injects into a fresh pod"
 	@echo
 	@echo "Underlying targets:"
@@ -327,6 +329,28 @@ step5d: bootstrap
 	@echo
 	@$(MAKE) status
 
+## Step 6a: platform self-health. Edits three existing releases, so no new Argo
+## Application: the collector gains the k8s_cluster receiver + a ClusterRole, Mimir
+## promotes the k8s.* resource attributes, the mimir-rules app gains a second rules
+## ConfigMap (loaded by the same PostSync Job), and grafana-dashboards gains the
+## platform-health dashboard. Applies the root app (idempotent); Argo re-syncs the
+## collector, mimir, mimir-rules and grafana-dashboards. Waits for them to go
+## Healthy. Run `make test-rules` first to unit-test the rules. Assumes Step 5 is up.
+.PHONY: step6a
+step6a: bootstrap
+	@echo
+	@echo "Waiting for Argo to re-sync collector, mimir, mimir-rules and dashboards..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/collector --timeout=300s
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/mimir --timeout=600s
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/mimir-rules --timeout=300s
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/grafana-dashboards --timeout=300s
+	@echo
+	@$(MAKE) status
+
 ## Unit-test the RED rules with promtool, locally, no cluster needed. The rules
 ## live inline in configmap.yaml (the single source), so first extract that data
 ## key into a transient rendered file next to the tests (ruby ships with macOS),
@@ -337,15 +361,19 @@ RULES_DIR := k8s/manifests/mimir/rules
 test-rules:
 	@ruby -ryaml -e 'print YAML.load_file("$(RULES_DIR)/configmap.yaml")["data"]["red-alerts.yaml"]' \
 	  > $(RULES_DIR)/tests/red-alerts.rendered.yaml
+	@ruby -ryaml -e 'print YAML.load_file("$(RULES_DIR)/configmap-platform.yaml")["data"]["platform-health.yaml"]' \
+	  > $(RULES_DIR)/tests/platform-health.rendered.yaml
 	docker run --rm --entrypoint promtool \
 	  -w /rules/tests \
 	  -v $(PWD)/$(RULES_DIR):/rules \
 	  prom/prometheus:v3.1.0 \
-	  test rules /rules/tests/red-alerts_test.yaml; \
-	  status=$$?; rm -f $(RULES_DIR)/tests/red-alerts.rendered.yaml; exit $$status
+	  test rules /rules/tests/red-alerts_test.yaml /rules/tests/platform-health_test.yaml; \
+	  status=$$?; \
+	  rm -f $(RULES_DIR)/tests/red-alerts.rendered.yaml $(RULES_DIR)/tests/platform-health.rendered.yaml; \
+	  exit $$status
 
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-step5a verify-step5b verify-step5c verify-step5d verify-injection
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-step5a verify-step5b verify-step5c verify-step5d verify-step6a verify-injection
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -376,6 +404,8 @@ verify-step5c:
 	@./scripts/verify.sh step5c
 verify-step5d:
 	@./scripts/verify.sh step5d
+verify-step6a:
+	@./scripts/verify.sh step6a
 verify-injection:
 	@./scripts/verify.sh injection
 
