@@ -12,7 +12,7 @@ an application-owned metric travelling the same path to Mimir.
 import logging
 import random
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from opentelemetry import metrics
 
 # Show INFO on stdout for local dev. In the cluster the operator also adds a
@@ -55,3 +55,17 @@ def rolldice():
     dice_rolls.add(1)
     logger.info("rolled a %s", result)
     return {"roll": result}
+
+
+@app.get("/flaky")
+def flaky(rate: float = Query(0.2, ge=0.0, le=1.0)):
+    """Fails with probability `rate` (a 500), else returns 200. Used to drive the
+    RED error-ratio alert (Step 5). A 5xx makes the auto-instrumented server span
+    status ERROR, so the request counts in
+    traces_span_metrics_calls_total{status_code="STATUS_CODE_ERROR"}, which pushes
+    job:span_request_error_ratio:rate5m and, above 5% for 5m, fires
+    AppHighErrorRatio. Default rate 0.2 is well over the 5% threshold."""
+    if random.random() < rate:
+        logger.warning("flaky failure (rate=%s)", rate)
+        raise HTTPException(status_code=500, detail="flaky failure")
+    return {"status": "ok"}
