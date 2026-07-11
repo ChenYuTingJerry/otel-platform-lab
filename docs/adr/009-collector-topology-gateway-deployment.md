@@ -74,3 +74,32 @@ not a gateway concern. The CR would only add an extra operator and Argo layer.
 - Revisit trigger: at higher scale or throughput, add a DaemonSet agent tier
   (agent collects locally, forwards to the gateway) or scale the gateway with
   replicas. Use sidecars only if a service needs per-pod isolation.
+
+## Addendum (2026-07): single-node k3d, and why a DaemonSet never replaces the gateway
+
+Two clarifications from a later discussion, worth pinning down.
+
+**On single-node k3d the "DaemonSet is cheaper" argument does not apply.** A
+DaemonSet runs one pod per node, so its cost only grows on multi-node clusters.
+On one node it is a single pod, the same as a one-replica Deployment. So the real
+reason to pick a DaemonSet is never resource saving; it is function: you need a
+pod on every node to collect node-local data (host metrics, pod log files on the
+node, kubelet or cAdvisor). We have no such need yet, so a gateway Deployment
+fits, and this is even clearer on k3d where we do not simulate multiple nodes.
+
+**A DaemonSet agent tier is added in front of the gateway, it does not replace
+it.** The full pattern is two tiers: app to node-local agent to gateway to
+backend. The gateway stays because some work only makes sense in one central
+place and a per-node agent cannot do it:
+
+- Tail-based sampling needs every span of a trace in one place to decide. A
+  trace's spans are spread across node agents, so no single agent sees the whole
+  trace. This is the sharpest reason the gateway survives.
+- Central egress to the backend (few controlled connections, ADR-002's
+  backend-protection), global rate control, and routing to several backends all
+  happen once at the gateway.
+
+So the three shapes (gateway only, agent only, or both) are a choice by need. You
+grow to two tiers when you need node-local collection and central processing at
+the same time. Raw throughput pressure on the gateway is handled first by adding
+gateway replicas, not by adding a DaemonSet.

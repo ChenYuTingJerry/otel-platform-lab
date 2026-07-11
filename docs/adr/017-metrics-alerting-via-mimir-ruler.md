@@ -1,7 +1,12 @@
 # ADR 017: Metrics alerting runs in the Mimir ruler, not Grafana-managed
 
-Status: Proposed
+Status: Accepted
 Date: 2026-07-11
+
+Verified live on k3d through Argo on 2026-07-11 (commits 34d45b8 + c027900):
+the ruler evaluates the RED rules, and a forced error burst drove
+AppHighErrorRatio from pending to firing and out through the Alertmanager to the
+webhook sink, end to end.
 
 ## Decisions made
 

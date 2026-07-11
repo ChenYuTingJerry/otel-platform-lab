@@ -590,7 +590,7 @@ Acceptance criteria:
 - [x] Grafana has a Mimir datasource; metrics stay aggregate (low cardinality).
 
 
-## Step 5 — App RED alerting (Mimir ruler + Alertmanager) + RED dashboard
+## Step 5 — App RED alerting (Mimir ruler + Alertmanager) + RED dashboard (Done)
 
 Alerting on the app RED metrics, plus one dashboard to read them. Rules live in
 the Mimir ruler in Prometheus format, in git, unit-tested with `promtool`, loaded
@@ -666,14 +666,21 @@ and flaky to force. To watch delivery, drive error traffic and tail the sink:
 kubectl -n observability logs -f deploy/alert-sink   # the webhook POST prints as JSON
 ```
 
-Note on verification: so far checked locally only. `make test-rules` passes (the
-three alerting rules behave as expected: error ratio 10%, p95 975ms, no-requests
-fires). The in-cluster path (`make step5a`..`5d` + `make verify`) still needs a run
-on k3d through Argo, same as every other step, before this is marked done.
+Note on verification: verified twice, like Step 4. First locally: `make test-rules`
+passes (the three alerting rules behave as expected: error ratio 10%, p95 975ms,
+no-requests fires). Then live on k3d through Argo: `make step5a`..`5d` and
+`make verify` are green. Two bugs surfaced and were fixed on the way (commit
+c027900): the ruler is a Deployment not a StatefulSet, and Mimir sets the job label
+to `demo/sample-api` (namespace/service), not `sample-api`, which the AppNoRequests
+alert had to key on `service_name` instead. Finally the full alert path was driven
+end to end: the sample app's `/flaky` endpoint held the error ratio near 20%, which
+took `AppHighErrorRatio` from pending to firing after its 5m `for`, and the Mimir
+Alertmanager delivered it to the `alert-sink` webhook (seen in
+`kubectl -n observability logs deploy/alert-sink`).
 
 Acceptance criteria:
 
-- [ ] Ruler + Alertmanager enabled and Healthy via the existing `mimir` Application.
-- [ ] RED rules loaded into the ruler under tenant `anonymous`, unit-tested with `promtool`.
-- [ ] Alerts route through Alertmanager to the in-cluster webhook sink.
-- [ ] The RED dashboard loads into Grafana as code (dashboards sidecar).
+- [x] Ruler + Alertmanager enabled and Healthy via the existing `mimir` Application.
+- [x] RED rules loaded into the ruler under tenant `anonymous`, unit-tested with `promtool`.
+- [x] Alerts route through Alertmanager to the in-cluster webhook sink.
+- [x] The RED dashboard loads into Grafana as code (dashboards sidecar).

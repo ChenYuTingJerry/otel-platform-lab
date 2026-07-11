@@ -44,6 +44,11 @@ compactor:
 ## the alerts that fire. Storage for both is auto-wired to the bundled MinIO
 ## (the mimir-ruler bucket) because minio.enabled is true, so no *_storage config
 ## is needed here. See docs/adr/017.
+##
+## Workload kinds are the chart's choice, not ours: the ruler is a Deployment
+## (stateless, it reads rules from object storage), the Alertmanager is a
+## StatefulSet (it keeps notification state on a PVC). So a rollout check on the
+## ruler uses deployment/mimir-ruler, on the Alertmanager statefulset/mimir-alertmanager.
 ruler:
   enabled: true
   replicas: 1
