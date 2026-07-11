@@ -47,7 +47,7 @@ Status at a glance:
 | Step 4a — Mimir backend + Grafana datasource | Done (verified on k3d via Argo) |
 | Step 4b — Metrics pipeline (span metrics + direct metrics) | Done (verified on k3d via Argo) |
 | Step 5 — App RED alerting (ruler + Alertmanager) + RED dashboard | Done (verified on k3d via Argo) |
-| Step 6a — Platform self-health (k8s_cluster metrics + alerts + dashboard) | Staged (rules unit-tested, metric shape smoke-verified; Argo verify post-merge) |
+| Step 6a — Platform self-health (k8s_cluster metrics + alerts + dashboard) | Done (verified on k3d via Argo) |
 
 A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
 has no build target of its own: the root app-of-apps picks it up during
@@ -690,7 +690,7 @@ Acceptance criteria:
 
 ---
 
-## Step 6a — Platform self-health (k8s_cluster metrics + alerts + dashboard) (Staged)
+## Step 6a — Platform self-health (k8s_cluster metrics + alerts + dashboard) (Done)
 
 Step 5 watches the app. Step 6a watches the platform's own services: alert when
 any important service is down or crash-looping. The signal is the Collector's
@@ -750,20 +750,24 @@ kubectl -n observability scale deploy/alert-sink --replicas=0   # then restore t
 kubectl -n observability logs -f deploy/alert-sink              # PlatformDeploymentUnavailable arrives as JSON
 ```
 
-Note on verification: pre-merge, two things are proven without touching the live
-managed config. `make test-rules` passes (the three platform rules fire as
-expected). And a throwaway collector with only the `k8s_cluster` receiver, run in
-an isolated namespace exporting to the real Mimir, confirmed the exact metric names
-and that the workload-identity attributes are resource attributes that collapse to
-one unlabeled series unless promoted (which is why the Mimir promotion is part of
-this step). The Argo-path checks in `verify-step6a` are inherently post-merge
-(Argo syncs from `main`), so they run green only after the push. Marked Staged
-until then.
+Note on verification: verified twice, like Steps 4 and 5. First pre-merge without
+touching the live managed config. `make test-rules` passes (the three platform
+rules fire as expected). And a throwaway collector with only the `k8s_cluster`
+receiver, run in an isolated namespace exporting to the real Mimir, confirmed the
+exact metric names and that the workload-identity attributes are resource
+attributes that collapse to one unlabeled series unless promoted (which is why the
+Mimir promotion is part of this step). Then live on k3d through Argo (commit
+d6fb13d): the collector re-synced with the receiver + ClusterRole (the k8s_cluster
+informer caches synced with no RBAC errors), Mimir re-synced the promotion, and
+`make verify-step6a` is green (7/7). Full `make verify` is green; a single
+transient miss on the Step 5b recording-rule check came from the collector restart
+resetting the span_metrics cumulative counters right before the run, and it passed
+on re-run once `rate[5m]` had history again.
 
 Acceptance criteria:
 
 - [x] `k8s_cluster` receiver on the gateway Collector, cluster-wide, no DaemonSet.
 - [x] Platform rules unit-tested with `promtool` (deployment/statefulset/restart).
-- [ ] Workload metrics land in Mimir with promoted labels (post-merge, `verify-step6a`).
-- [ ] Platform alerts loaded in the ruler and route to the sink (post-merge).
-- [ ] The platform-health dashboard loads into Grafana as code (post-merge).
+- [x] Workload metrics land in Mimir with promoted labels (`verify-step6a`).
+- [x] Platform alerts loaded in the ruler and route to the sink.
+- [x] The platform-health dashboard loads into Grafana as code.
