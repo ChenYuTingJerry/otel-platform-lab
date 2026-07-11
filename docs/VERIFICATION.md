@@ -44,8 +44,8 @@ Status at a glance:
 | Step 2d — Auto-instrumentation + sample app | Done (workload verified on k3d) |
 | Step 2e — One trace queryable end to end | Done (verified on k3d) |
 | Step 3 — Loki (logs pipeline + trace correlation both ways) | Done (data path verified on k3d) |
-| Step 4a — Mimir backend + Grafana datasource | Done (data path verified on k3d) |
-| Step 4b — Metrics pipeline (span metrics + direct metrics) | Done (data path verified on k3d) |
+| Step 4a — Mimir backend + Grafana datasource | Done (verified on k3d via Argo) |
+| Step 4b — Metrics pipeline (span metrics + direct metrics) | Done (verified on k3d via Argo) |
 
 A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
 has no build target of its own: the root app-of-apps picks it up during
@@ -557,25 +557,30 @@ curl -s -u admin:otel-lab-admin -G \
 # Each returns a "success" vector with a "metric" object in the result array.
 ```
 
-Note on verification: the data path was verified end to end on k3d in an
-isolated `step4-smoke` namespace (Argo reads `main`, so like Steps 2c/3 the Argo
-path goes green only after push). A real Mimir, a Collector with the new metrics
-pipeline, and the injected sample app were brought up there, traffic driven, and
-both metrics read back from Mimir's Prometheus query API:
+Note on verification: verified twice. First the data path was smoke-tested on
+k3d in an isolated `step4-smoke` namespace before merge (a real Mimir, a Collector
+with the new metrics pipeline, and the injected sample app, traffic driven, both
+metrics read back). Then, after the change merged to `main` and Argo deployed it,
+the full path was verified through Argo: `make verify-step4a` and
+`make verify-step4b` pass, and `make verify` (step0 through step4b + injection) is
+green end to end. What the metrics carry:
 
-- `traces_span_metrics_calls_total{service_name="sample-api"}` carried
+- `traces_span_metrics_calls_total{service_name="sample-api"}` carries
   `http_method=GET`, `http_route=/rolldice`, `http_status_code=200` (the legacy
   HTTP semconv keys the Python SDK actually emits, so the dimensions are
   populated, not empty),
-- `dice_rolls_total` carried the app's own counter value,
-- both carried `deployment_environment=lab` as a real label, which proves the
+- `dice_rolls_total` carries the app's own counter value,
+- both carry `deployment_environment=lab` as a real label, which proves the
   `promote_otel_resource_attributes` promotion works (without it the attribute
   would sit in a `target_info` series). The `_total` suffix confirms
   `otel_metric_suffixes_enabled` is on.
 
-The Grafana proxy query path in the checks above was validated against that same
-data. `make verify-step4a` / `verify-step4b` exercise the same workload through
-Argo once the manifests are on `main`.
+One operational note: after Step 4b rebuilds the image and Argo updates the
+Instrumentation CR (`OTEL_METRICS_EXPORTER` now `otlp`), the running `sample-api`
+pod does not pick either up on its own, because the Deployment manifest is
+unchanged so Argo does not roll it. Run `kubectl rollout restart deploy/sample-api
+-n demo` so a fresh pod gets the new image and is re-injected with the metrics
+exporter on.
 
 Acceptance criteria:
 
