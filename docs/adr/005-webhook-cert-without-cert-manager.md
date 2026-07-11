@@ -1,7 +1,13 @@
 # ADR 005: Self-generate the OTel Operator webhook cert, not cert-manager
 
-Status: Accepted
+Status: Superseded by ADR-016
 Date: 2026-07-06
+
+> Superseded on 2026-07-11. `autoGenerateCert` regenerates a random cert on every
+> Helm render, so under Argo the webhook `caBundle` and the serving cert drift
+> apart and injection breaks silently. The premise below ("the chart regenerates
+> it on a Helm change") does not hold under GitOps. See ADR-016 for the cert-manager
+> replacement and the full diagnosis.
 
 ## Context
 

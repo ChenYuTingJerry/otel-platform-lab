@@ -313,6 +313,27 @@ verify_step3() {
   assert_contains "Loki has a sample-api log line with a trace_id" 'rolled a' "${resp:-}"
 }
 
+verify_injection() {
+  echo "Injection - the webhook injects the auto-instrumentation init-container:"
+
+  # Server-side dry-run a pod with the inject annotation, in demo (which holds
+  # the `python` Instrumentation CR from Step 2d). The mutating webhook runs on a
+  # server dry-run but nothing is persisted.
+  #
+  # This is the check verify_step2d cannot do. Step 2d inspects a long-lived pod
+  # that was injected once; it stays green even if the webhook later breaks. Here
+  # we exercise the webhook on a fresh pod. If the webhook cert has drifted,
+  # mpod.kb.io (failurePolicy=Ignore) lets the pod through with no init-container,
+  # so the result is empty rather than an error. That empty result is the failure.
+  local initc
+  initc=$($KUBECTL -n demo run inject-probe --dry-run=server \
+    -o jsonpath='{.spec.initContainers[*].name}' \
+    --image=sample-api:0.1.0 --restart=Never --override-type=merge \
+    --overrides='{"metadata":{"annotations":{"instrumentation.opentelemetry.io/inject-python":"python"}}}' 2>/dev/null)
+  assert_contains "webhook injects auto-instrumentation on a fresh pod" \
+    "opentelemetry-auto-instrumentation" "$initc"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
@@ -322,9 +343,11 @@ case "${1:-all}" in
   step2d) verify_step2d ;;
   step2e) verify_step2e ;;
   step3)  verify_step3 ;;
+  injection) verify_injection ;;
   all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; \
-          verify_step2c; echo; verify_step2d; echo; verify_step2e; echo; verify_step3 ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|all]" >&2; exit 2 ;;
+          verify_step2c; echo; verify_step2d; echo; verify_step2e; echo; verify_step3; echo; \
+          verify_injection ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|injection|all]" >&2; exit 2 ;;
 esac
 
 echo
