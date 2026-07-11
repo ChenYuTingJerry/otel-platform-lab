@@ -44,7 +44,8 @@ Status at a glance:
 | Step 2d — Auto-instrumentation + sample app | Done (workload verified on k3d) |
 | Step 2e — One trace queryable end to end | Done (verified on k3d) |
 | Step 3 — Loki (logs pipeline + trace correlation both ways) | Done (data path verified on k3d) |
-| Step 4 — Mimir (span metrics + direct metrics) | Not implemented |
+| Step 4a — Mimir backend + Grafana datasource | Done (data path verified on k3d) |
+| Step 4b — Metrics pipeline (span metrics + direct metrics) | Done (data path verified on k3d) |
 
 A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
 has no build target of its own: the root app-of-apps picks it up during
@@ -53,8 +54,8 @@ has no build target of its own: the root app-of-apps picks it up during
 `make step2c` that waits for it to go Healthy.
 
 ```sh
-make clean && make step0 && make step1 && make step2b && make step2c && make step2d && make step3
-make verify        # asserts step0 + step1 + step2a..2e + step3
+make clean && make step0 && make step1 && make step2b && make step2c && make step2d && make step3 && make step4a && make step4b
+make verify        # asserts step0 + step1 + step2a..2e + step3 + step4a + step4b
 ```
 
 ---
@@ -487,13 +488,98 @@ Acceptance criteria:
 - [x] Logs carry high-cardinality context (`trace_id`, `span_id`, code location)
   as structured metadata, while the index labels stay low-cardinality.
 
-## Step 4 — Mimir, span metrics + direct metrics (Not implemented)
+## Step 4 — Mimir, span metrics + direct metrics (Done)
 
-Build/Verify commands: TODO when built.
+Mimir is the metrics backend, the last of the four signals. It runs as
+`mimir-distributed` in the ingest-storage (Kafka) architecture, trimmed to a
+single-node footprint (~12 pods incl. Kafka + MinIO, see docs/adr/013). Two
+metric paths land in Mimir, both through the one Collector:
+
+- **Span metrics**: RED metrics (rate, errors, duration) the Collector's
+  `span_metrics` connector derives from the trace stream, no app change
+  (docs/adr/015).
+- **Direct metrics**: the app SDK's own OTLP metrics, the auto-instrumentation
+  HTTP server metrics plus one custom `dice.rolls` counter (this is why
+  `OTEL_METRICS_EXPORTER` went back to `otlp`, after being `none` in Step 3).
+
+Both leave the Collector as OTLP to `mimir-gateway` `/otlp/v1/metrics`, not
+Prometheus remote-write (docs/adr/014). Grafana gets a Mimir datasource (type
+`prometheus`), so metrics are queryable next to traces and logs. Split into two
+sub-steps: 4a is the backend + datasource, 4b is the pipeline + app change.
+
+### Build
+
+```sh
+make step4a       # applies the root app (idempotent); Argo syncs Mimir
+make step4b       # rebuild+import the image, Argo re-syncs collector + app
+```
+
+`make step4a` discovers `k8s/argocd/applications/mimir.yaml`, creates the `mimir`
+Application, and Argo syncs it (the ~12-pod Mimir plus the datasource ConfigMap).
+The wait timeout is longer than other steps because Mimir is the heaviest
+backend. `make step4b` runs `make sample-image` (the `dice.rolls` counter is new
+app code) then applies the root app; Argo re-syncs the collector (now with a
+metrics pipeline) and the sample app (new image, `OTEL_METRICS_EXPORTER=otlp`).
+Assumes Step 3 is up. Mimir is sync-wave 1 (a backend, same as Tempo and Loki),
+so it is up before the Collector at wave 2.
+
+### Verify
+
+```sh
+make verify-step4a    # Mimir synced + ingester ready + prometheus datasource
+make verify-step4b    # a span metric + the app counter queryable in Mimir
+```
+
+`verify-step4a` asserts the `mimir` Application Synced/Healthy, the
+`mimir-ingester` StatefulSet ready (the write-path core), and a
+`type: prometheus` datasource in Grafana. `verify-step4b` drives `/rolldice`,
+then queries Mimir through the Grafana proxy for two series, retried for async
+ingestion. The same checks by hand:
+
+```sh
+kubectl -n argocd get application mimir \
+  -o custom-columns=SYNC:.status.sync.status,HEALTH:.status.health.status --no-headers
+kubectl -n observability get statefulset mimir-ingester   # READY 1/1
+curl -s -u admin:otel-lab-admin http://localhost:3000/api/datasources | grep -o '"type":"prometheus"'
+
+kubectl -n demo run metric-gen --rm -i --restart=Never --image=curlimages/curl:latest --command -- \
+  sh -c 'for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done'
+
+# The Mimir datasource URL ends in /prometheus, so the proxy path appends /api/v1/query.
+# Span metric (RED, from the connector):
+curl -s -u admin:otel-lab-admin -G \
+  http://localhost:3000/api/datasources/proxy/uid/mimir/api/v1/query \
+  --data-urlencode 'query=traces_span_metrics_calls_total{service_name="sample-api"}'
+# Direct app counter:
+curl -s -u admin:otel-lab-admin -G \
+  http://localhost:3000/api/datasources/proxy/uid/mimir/api/v1/query \
+  --data-urlencode 'query=dice_rolls_total'
+# Each returns a "success" vector with a "metric" object in the result array.
+```
+
+Note on verification: the data path was verified end to end on k3d in an
+isolated `step4-smoke` namespace (Argo reads `main`, so like Steps 2c/3 the Argo
+path goes green only after push). A real Mimir, a Collector with the new metrics
+pipeline, and the injected sample app were brought up there, traffic driven, and
+both metrics read back from Mimir's Prometheus query API:
+
+- `traces_span_metrics_calls_total{service_name="sample-api"}` carried
+  `http_method=GET`, `http_route=/rolldice`, `http_status_code=200` (the legacy
+  HTTP semconv keys the Python SDK actually emits, so the dimensions are
+  populated, not empty),
+- `dice_rolls_total` carried the app's own counter value,
+- both carried `deployment_environment=lab` as a real label, which proves the
+  `promote_otel_resource_attributes` promotion works (without it the attribute
+  would sit in a `target_info` series). The `_total` suffix confirms
+  `otel_metric_suffixes_enabled` is on.
+
+The Grafana proxy query path in the checks above was validated against that same
+data. `make verify-step4a` / `verify-step4b` exercise the same workload through
+Argo once the manifests are on `main`.
 
 Acceptance criteria:
 
-- [ ] Mimir deployed via an Argo Application.
-- [ ] Span metrics derived from traces (Collector spanmetrics) land in Mimir.
-- [ ] A direct metrics path works too.
-- [ ] Grafana has a Mimir datasource; metrics stay aggregate (low cardinality).
+- [x] Mimir deployed via an Argo Application.
+- [x] Span metrics derived from traces (Collector `span_metrics`) land in Mimir.
+- [x] A direct metrics path works too (SDK OTLP + the custom `dice_rolls_total`).
+- [x] Grafana has a Mimir datasource; metrics stay aggregate (low cardinality).

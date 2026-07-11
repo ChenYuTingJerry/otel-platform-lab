@@ -37,12 +37,19 @@ spec:
         value: otlp
       - name: OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED
         value: "true"
-      ## Metrics come in Step 4 (Mimir). Until the Collector has a metrics
-      ## pipeline, the SDK's default OTLP metrics export just gets 404s and
-      ## logs an error every interval, which spams the logs. Turn it off for
-      ## now; Step 4 switches it back on.
+      ## Metrics (Step 4). The Collector now has a metrics pipeline that exports
+      ## to Mimir, so the SDK's OTLP metrics export has somewhere to land. In
+      ## Step 3 this was `none`, because without that pipeline every export
+      ## interval produced a 404 and an error line. Same Collector endpoint as
+      ## traces and logs.
+      ##
+      ## This turns on the direct metrics path: the auto-instrumentation's HTTP
+      ## server metrics, plus the app's own `dice.rolls` counter. The other
+      ## metrics path, RED metrics derived from spans, needs nothing here: the
+      ## Collector's span_metrics connector builds it from the traces we already
+      ## send (docs/adr/015).
       - name: OTEL_METRICS_EXPORTER
-        value: none
+        value: otlp
       ## Do not trace the readiness/liveness probe. The kubelet hits /healthz
       ## every few seconds, which floods Tempo with low-value spans and buries
       ## real traffic. Pod health is observed through k8s probes and metrics,

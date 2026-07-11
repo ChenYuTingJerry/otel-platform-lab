@@ -1,5 +1,6 @@
-# A plain FastAPI image, packaged with uv. No OpenTelemetry packages on purpose:
-# the OTel Operator injects the SDK at pod creation, so instrumentation stays
+# A plain FastAPI image, packaged with uv. The only OpenTelemetry package is
+# opentelemetry-api, used for one custom metric (Step 4). No SDK, no exporter:
+# the OTel Operator injects those at pod creation, so tracing and logging stay
 # zero-code.
 FROM python:3.12-slim
 

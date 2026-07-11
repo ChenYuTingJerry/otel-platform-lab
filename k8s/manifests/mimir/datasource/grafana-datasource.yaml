@@ -1,0 +1,40 @@
+## Grafana datasource for Mimir.
+##
+## Ships with the Mimir Application, not with Grafana's values, the same pattern
+## as the Tempo and Loki datasources: Grafana's sidecar watches for ConfigMaps
+## labelled `grafana_datasource` and loads them at runtime. Each backend brings
+## its own datasource. See docs/adr/007.
+##
+## Mimir speaks the Prometheus query API, so the datasource type is `prometheus`.
+## There is no Mimir-specific datasource type; `prometheusType` below just tells
+## Grafana which flavour it is talking to.
+##
+## The URL points at `mimir-gateway`, which is Mimir's own nginx front door in
+## front of its microservices, on its /prometheus path. Do not confuse it with
+## the OTel Collector, which is a "gateway" in the collector-topology sense
+## (docs/adr/009). They are different layers. See docs/adr/013.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-grafana-datasource
+  namespace: observability
+  labels:
+    grafana_datasource: "1"
+data:
+  mimir-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Mimir
+        type: prometheus
+        uid: mimir
+        access: proxy
+        url: http://mimir-gateway.observability.svc.cluster.local/prometheus
+        isDefault: false
+        editable: false
+        jsonData:
+          prometheusType: Mimir
+          prometheusVersion: 3.1.2
+          # The OTel SDK exports metrics every 60s by default, and the
+          # spanmetrics connector emits on a similar interval. Telling Grafana
+          # the real scrape interval keeps rate() windows sane.
+          timeInterval: 60s

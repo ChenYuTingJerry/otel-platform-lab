@@ -4,8 +4,8 @@
 ##   Step 0  scaffold  - k3d cluster + ArgoCD          (make step0)   [done]
 ##   Step 1  Grafana   - the UI                         (make step1)   [done]
 ##   Step 2  Tempo     - traces                    (make step2b, step2c)  [2b,2c done]
-##   Step 3  Loki      - logs                                          [todo]
-##   Step 4  Mimir     - metrics                                       [todo]
+##   Step 3  Loki      - logs                            (make step3)   [done]
+##   Step 4  Mimir     - metrics                    (make step4a, step4b)  [4a,4b done]
 ## Each step is verified end to end before the next. See docs/VERIFICATION.md.
 
 CLUSTER      ?= otel-lab
@@ -25,7 +25,8 @@ help:
 	@echo "  make step2c            - Step 2c: OTel Collector (single ingress gateway)"
 	@echo "  make step2d            - Step 2d: auto-instrumentation + sample app"
 	@echo "  make step3             - Step 3: Loki logs backend (OTLP via the Collector)"
-	@echo "  (step4: Mimir, not implemented yet)"
+	@echo "  make step4a            - Step 4a: Mimir metrics backend + Grafana datasource"
+	@echo "  make step4b            - Step 4b: Collector metrics pipeline + app counter"
 	@echo
 	@echo "Tests (assert state, exit non-zero on failure):"
 	@echo "  make verify            - run every implemented step's checks"
@@ -36,6 +37,8 @@ help:
 	@echo "  make verify-step2d     - assert injection + sample app running"
 	@echo "  make verify-step2e     - assert one trace queryable in Tempo"
 	@echo "  make verify-step3      - assert Loki synced + a log line with trace_id"
+	@echo "  make verify-step4a     - assert Mimir synced + datasource present"
+	@echo "  make verify-step4b     - assert a span metric + the app counter in Mimir"
 	@echo "  make verify-injection  - assert the webhook injects into a fresh pod"
 	@echo
 	@echo "Underlying targets:"
@@ -205,8 +208,41 @@ step3: bootstrap
 	@echo
 	@$(MAKE) status
 
+## Step 4a: Mimir metrics backend + Grafana datasource. Applies the root app
+## (idempotent); Argo discovers the mimir Application and syncs it. Mimir is the
+## heaviest backend (~12 pods incl. Kafka + MinIO), so the wait timeout is longer
+## than the other steps. Assumes Step 3 is up. sync-wave 1, a backend like Tempo
+## and Loki, up before the Collector (wave 2).
+.PHONY: step4a
+step4a: bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the mimir Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/mimir >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the mimir Application to become Healthy (Mimir is ~12 pods)..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/mimir --timeout=600s
+	@echo
+	@$(MAKE) status
+
+## Step 4b: Collector metrics pipeline (span_metrics + direct passthrough) + the
+## app's dice.rolls counter. Rebuilds and imports the image (the counter is new
+## app code), then applies the root app (idempotent). Argo re-syncs the collector
+## (now with a metrics pipeline) and sample-app (new image + OTEL_METRICS_EXPORTER
+## flipped to otlp). Waits for the sample app to go Healthy. Assumes Step 4a is up.
+.PHONY: step4b
+step4b: sample-image bootstrap
+	@echo
+	@echo "Waiting for the sample-app Application to become Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/sample-app --timeout=180s
+	@echo
+	@$(MAKE) status
+
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-injection
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-injection
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -225,6 +261,10 @@ verify-step2e:
 	@./scripts/verify.sh step2e
 verify-step3:
 	@./scripts/verify.sh step3
+verify-step4a:
+	@./scripts/verify.sh step4a
+verify-step4b:
+	@./scripts/verify.sh step4b
 verify-injection:
 	@./scripts/verify.sh injection
 

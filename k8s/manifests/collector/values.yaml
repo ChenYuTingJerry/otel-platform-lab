@@ -19,7 +19,10 @@ fullnameOverride: otel-collector
 replicaCount: 1
 
 ## The k8s distro carries the components we use (otlp, memory_limiter, resource,
-## batch). No contrib image needed yet.
+## batch) and, as of Step 4, the span_metrics connector and the otlp_http
+## exporter too. So metrics need no contrib image either. (The k8s distro does
+## drop prometheusremotewrite, but we push OTLP to Mimir, not remote-write. See
+## docs/adr/014.)
 image:
   repository: otel/opentelemetry-collector-k8s
 
@@ -51,7 +54,7 @@ ports:
 ## Collector pipeline. The chart deep-merges this over its defaults, which ship
 ## logs/metrics/traces pipelines with a debug exporter and jaeger/zipkin/
 ## prometheus receivers. We set the unwanted defaults to null to drop them, so
-## the effective config is traces-only, OTLP-in, Tempo-out.
+## the effective config is OTLP-in, and Tempo/Loki/Mimir out.
 config:
   receivers:
     jaeger: null
@@ -78,6 +81,43 @@ config:
           value: lab
           action: upsert
     batch: {}
+  ## Connectors join two pipelines: they consume from one and emit into another.
+  ## span_metrics is an exporter on the traces pipeline and a receiver on the
+  ## metrics pipeline (Step 4). One span stream therefore feeds both Tempo (the
+  ## trace itself) and Mimir (the aggregate), with no app-side change. This is
+  ## the RED-metrics path in docs/adr/015.
+  ##
+  ## The component id is `span_metrics`, not `spanmetrics`. This collector
+  ## renames component types to snake_case (same reason the exporters below are
+  ## otlp_grpc / otlp_http, not otlp / otlphttp).
+  connectors:
+    span_metrics:
+      ## Metric names come out as traces_span_metrics_calls_total and
+      ## traces_span_metrics_duration_milliseconds_* once Mimir translates them.
+      namespace: traces.span.metrics
+      histogram:
+        explicit:
+          ## A short bucket list on purpose. Every bucket is a series per label
+          ## set, so buckets are a cardinality knob. These span a local API's
+          ## realistic range.
+          buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2500ms, 5s]
+      ## Extra labels on top of the connector's defaults (service.name,
+      ## span.name, span.kind, status.code).
+      ##
+      ## These are the *legacy* HTTP semconv keys, which is what the injected
+      ## Python auto-instrumentation actually emits today (verified on a real
+      ## span). The new-style http.request.method / http.response.status_code
+      ## are not present, so naming those here would produce empty labels.
+      ##
+      ## http.route is the route template (/rolldice), not the raw path. Raw
+      ## paths (http.target, http.url) stay out: they are per-request detail and
+      ## belong in traces, not in metric labels.
+      dimensions:
+        - name: http.method
+        - name: http.status_code
+        - name: http.route
+      ## Temporality is cumulative by default, which is what Mimir wants; it
+      ## rejects delta unless explicitly enabled.
   exporters:
     ## Drop the chart's default debug exporter.
     debug: null
@@ -95,17 +135,36 @@ config:
       endpoint: http://loki.observability.svc.cluster.local:3100/otlp
       tls:
         insecure: true
+    ## Metrics to Mimir over OTLP (Step 4). otlp_http appends /v1/metrics to
+    ## this base, which is exactly the route mimir-gateway's nginx exposes.
+    ## mimir-gateway is Mimir's own front door, not to be confused with this
+    ## Collector, which is a gateway in the collector-topology sense
+    ## (docs/adr/009 and docs/adr/013). We push OTLP rather than Prometheus
+    ## remote-write, to keep one protocol out of the Collector (docs/adr/014).
+    otlp_http/mimir:
+      endpoint: http://mimir-gateway.observability.svc.cluster.local/otlp
+      tls:
+        insecure: true
   service:
     pipelines:
-      ## Metrics (Step 4) still come later.
-      metrics: null
+      ## Traces go to Tempo, and the same spans feed the span_metrics connector,
+      ## which turns them into RED metrics for the metrics pipeline below.
       traces:
         receivers: [otlp]
         processors: [memory_limiter, resource, batch]
-        exporters: [otlp_grpc/tempo]
+        exporters: [otlp_grpc/tempo, span_metrics]
       ## Logs ride the same OTLP-in path as traces. The resource processor
       ## enriches them too, so logs also carry deployment.environment=lab.
       logs:
         receivers: [otlp]
         processors: [memory_limiter, resource, batch]
         exporters: [otlp_http/loki]
+      ## Metrics have two sources (Step 4):
+      ##   otlp         - the app's own SDK metrics, the direct path
+      ##   span_metrics - RED metrics derived from the traces pipeline above
+      ## Both get the resource processor, so metrics carry
+      ## deployment.environment=lab like traces and logs do.
+      metrics:
+        receivers: [otlp, span_metrics]
+        processors: [memory_limiter, resource, batch]
+        exporters: [otlp_http/mimir]

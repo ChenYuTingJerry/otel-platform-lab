@@ -41,9 +41,75 @@ Correlation is wired both ways in Grafana:
 - Tempo datasource `tracesToLogsV2`: a span links back to Loki, filtered by
   `service.name` and the span's `trace_id`, so a trace jumps to its logs.
 
-## Metrics (Step 4, not built yet)
+## Metrics (Step 4, done)
 
-Metrics land in Mimir. Two paths are planned: span metrics derived from traces
-by the Collector (RED metrics with no app-side change), and a direct metrics
-path. Metrics stay aggregate and low-cardinality; the per-request detail belongs
-in traces and logs, not in metric labels. This section fills in during Step 4.
+Metrics land in Mimir through two paths, both via the Collector. Metrics stay
+aggregate and low-cardinality; the per-request detail belongs in traces and
+logs, not in metric labels.
+
+How Mimir plugs into the rest of the lab:
+
+```
+  demo ns
+  ┌─────────────────────────┐
+  │ sample-api              │
+  │  app + injected OTel SDK │  OTLP: traces + logs + metrics
+  └────────────┬────────────┘
+               │
+  observability ns
+               v
+  ┌────────────────────────────────────┐
+  │ OTel Collector (single ingress)     │
+  │                                      │
+  │  traces  ──────────────────────────┼──> Tempo
+  │     └── spanmetrics connector ──┐   │
+  │  logs    ───────────────────────┼──┼──> Loki
+  │  metrics <──────────────────────┘   │
+  │   (otlp from the app + spanmetrics) ┼──> Mimir  (OTLP /otlp/v1/metrics)
+  └────────────────────────────────────┘         │
+                                                  v
+        ┌──────────────────── mimir-gateway ─────────────────────┐
+        │  distributor -> Kafka -> ingester -> MinIO (blocks)     │
+        │  querier / store-gateway / compactor                    │
+        └─────────────────────────────────────────────────────────┘
+                            ^
+   Grafana ──── query /prometheus (Mimir datasource) ──┘
+```
+
+The Mimir internals (distributor, Kafka, ingester, object store, query path) and
+why it runs in the ingest-storage architecture are in ADR-013. Note the two
+"gateway" layers: the Collector is a gateway-topology collector (ADR-009), and
+`mimir-gateway` is Mimir's own nginx front door. They are different things.
+
+### Path 1: span metrics (no app change)
+
+The Collector's `spanmetrics` connector reads the trace pipeline and emits RED
+metrics (request rate, error rate, duration) per service and operation. It is an
+exporter on the traces pipeline and a receiver on the metrics pipeline, so one
+span stream feeds both Tempo (the trace) and Mimir (the aggregate). No app-side
+change: the same auto-instrumentation that produces traces produces these
+metrics for free. Dimensions stay low-cardinality on purpose (method, status
+code, route template), never raw paths or per-request ids.
+
+### Path 2: direct metrics (from the app SDK)
+
+The injected SDK also exports the app's own metrics as OTLP: the
+auto-instrumentation HTTP server metrics, plus one explicit custom metric the app
+declares (a `dice.rolls` counter). This is why `OTEL_METRICS_EXPORTER` went back
+to `otlp` in Step 4, after being `none` in Step 3 to stop 404s before a metrics
+pipeline existed. It is a small, deliberate break from the app's "zero OTel code"
+rule, kept low-cardinality (a bounded label at most).
+
+### Ingestion and cardinality
+
+Both paths leave the Collector as OTLP and hit `mimir-gateway` at
+`/otlp/v1/metrics`, the same OTLP story the logs path uses for Loki. The
+Collector's `resource` processor stamps `deployment.environment=lab` on metrics
+too, so all three signals carry it.
+
+One Mimir detail to know: under OTLP, resource attributes are not turned into
+metric labels by default. Only `service.name` (-> `job`) and `service.instance.id`
+(-> `instance`) are mapped; everything else lands in a `target_info` series that
+you join against. To make `deployment.environment` a real label like it is on
+traces and logs, we promote it with Mimir's `promote_otel_resource_attributes`.
+The alternative, a `target_info` join, is left as a note in ADR-014.

@@ -1,0 +1,56 @@
+## Argo Application: Mimir (Step 4), the metrics backend.
+##
+## Same multi-source shape as Tempo and Loki:
+##   source 0 - the mimir-distributed Helm chart
+##   source 1 - this Git repo as `$values`, for values.yaml
+##   source 2 - this Git repo again, rendering the raw Grafana datasource
+##              ConfigMap under k8s/manifests/mimir/datasource/, same as the
+##              other backends.
+##
+## The chart comes from the `grafana` repo, not `grafana-community`. This breaks
+## the pattern Tempo (docs/adr/008) and Loki (docs/adr/011) follow, but it is
+## forced: there is no Mimir chart on the community repo. See docs/adr/013.
+##
+## The chart runs Mimir in the ingest-storage (Kafka) architecture, its default
+## since chart 6.0.0. That is a deliberate choice, not an accident of the
+## default. See docs/adr/013.
+##
+## sync-wave 1: a backend, same wave as Tempo and Loki, so it is up before the
+## Collector (wave 2), which exports metrics to it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mimir
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  sources:
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: mimir-distributed
+      targetRevision: 6.1.0
+      helm:
+        releaseName: mimir
+        valueFiles:
+          - $values/k8s/manifests/mimir/values.yaml
+    - repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+      targetRevision: main
+      ref: values
+    - repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+      targetRevision: main
+      path: k8s/manifests/mimir/datasource
+      directory:
+        recurse: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

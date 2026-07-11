@@ -4,8 +4,16 @@ version = "0.1.0"
 description = "FastAPI sample service for the otel-platform-lab end-to-end trace check"
 requires-python = ">=3.12"
 # fastapi[standard] pulls in the FastAPI CLI (fastapi run) and uvicorn[standard].
-# No OpenTelemetry packages on purpose: the OTel Operator injects the SDK at pod
-# creation, so instrumentation stays zero-code.
+#
+# opentelemetry-api is the ONLY OTel package here, added in Step 4 so the app can
+# declare one custom metric (a counter). It is the API, not the SDK: it carries no
+# exporter and no provider. At runtime the operator's injected auto-instrumentation
+# supplies the real MeterProvider, and puts its own opentelemetry-api earlier on
+# PYTHONPATH, so this pin only matters for local imports and editor support.
+#
+# Tracing and logging stay zero-code: the operator injects the SDK at pod creation
+# and the app never mentions them.
 dependencies = [
     "fastapi[standard]>=0.115.6",
+    "opentelemetry-api>=1.42.0",
 ]

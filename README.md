@@ -31,6 +31,8 @@ make step2b   # Tempo backend + its Grafana datasource
 make step2c   # OTel Collector, the single ingress gateway
 make step2d   # sample app + auto-instrumentation, one trace end to end
 make step3    # Loki logs backend, logs via the Collector, trace correlation
+make step4a   # Mimir metrics backend + its Grafana datasource
+make step4b   # Collector metrics pipeline + the app counter, metrics end to end
 ```
 
 - `make step0` runs `make cluster` (k3d cluster `otel-lab`, host ports 3000 for
@@ -71,7 +73,7 @@ Each step is verified end-to-end before the next one starts.
 1. [x] Step 1 - Grafana UI reachable via ArgoCD
 2. [x] Step 2 - OTel Collector + Tempo, traces from a sample app
 3. [x] Step 3 - Loki logs pipeline with trace_id to logs pivot
-4. [ ] Step 4 - Mimir metrics (span metrics + direct)
+4. [x] Step 4 - Mimir metrics (span metrics + direct)
 
 ## Design constraints (deliberate)
 

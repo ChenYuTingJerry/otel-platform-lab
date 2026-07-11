@@ -1,0 +1,110 @@
+## Grafana Mimir Helm values (mimir-distributed), read by Argo through the Mimir
+## Application CR. Mimir is the metrics backend for Step 4.
+##
+## Architecture: ingest-storage (Kafka), which is the chart default since 6.0.0.
+## The distributor writes to Kafka and the ingester consumes from it. See
+## docs/adr/013 for the classic vs ingest-storage comparison and why we keep the
+## default instead of forcing the classic push path.
+##
+## Unlike Tempo and Loki, there is no single-binary mode here: this chart only
+## ships the microservice topology. So we trim it instead: one replica per
+## component, no zones, no caches, and nothing the lab does not query.
+
+## One replica per component. The chart's defaults assume a real cluster.
+distributor:
+  replicas: 1
+
+ingester:
+  replicas: 1
+  ## Zone-aware replication spreads ingesters across one StatefulSet per zone.
+  ## A one-node k3d cluster has no zones. With this off, `replicas` is taken as
+  ## is, so this is a single ingester.
+  zoneAwareReplication:
+    enabled: false
+
+querier:
+  replicas: 1
+
+query_frontend:
+  replicas: 1
+
+query_scheduler:
+  replicas: 1
+
+store_gateway:
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false
+
+compactor:
+  replicas: 1
+
+## Not used by the lab. We never write recording rules or route alerts from
+## Mimir; Grafana only reads metrics back.
+ruler:
+  enabled: false
+alertmanager:
+  enabled: false
+
+## Memcached tiers. Pure query and chunk caching. At the lab's data volume they
+## are dead weight, so drop four pods.
+chunks-cache:
+  enabled: false
+index-cache:
+  enabled: false
+metadata-cache:
+  enabled: false
+results-cache:
+  enabled: false
+
+## Bundled object storage. Mimir always stores its blocks in an object store,
+## and in distributed mode a filesystem is not an option, because the components
+## do not share a disk (see docs/adr/013).
+minio:
+  enabled: true
+
+## The ingest-storage write buffer: distributor -> Kafka -> ingester. A single
+## broker in demo mode, as the chart ships it. This is a buffer inside Mimir's
+## write path, not a collection-side buffer (see docs/adr/009 and docs/adr/013).
+## The chart asks for 1 CPU by default; trim it for a laptop.
+kafka:
+  enabled: true
+  resources:
+    requests:
+      cpu: 500m
+      memory: 768Mi
+
+## Merged over the chart's rendered mimir.yaml.
+##
+## Note what is *not* here: ingester.ring.replication_factor. Mimir's own help
+## says that setting "is not used when ingest storage is enabled", because Kafka
+## provides the write-path durability instead of ingester-to-ingester
+## replication. So a single ingester needs no replication override.
+mimir:
+  structuredConfig:
+    ## Turn off anonymous usage reporting, same as Tempo and Loki.
+    usage_stats:
+      enabled: false
+
+    limits:
+      ## Under OTLP, Mimir does not turn resource attributes into metric labels.
+      ## It maps only service.name -> job and service.instance.id -> instance;
+      ## everything else lands in a `target_info` series you have to join
+      ## against. Promote the one attribute the Collector's resource processor
+      ## adds, so metrics carry deployment.environment=lab as a real label, the
+      ## way traces and logs already do. See docs/adr/014.
+      ##
+      ## This takes a comma-separated string, not a YAML list. A list fails to
+      ## parse ("cannot unmarshal !!seq into string"). Still experimental.
+      promote_otel_resource_attributes: "deployment.environment"
+
+      ## Add the Prometheus-style suffixes when translating OTLP metrics: a
+      ## `_total` on counters and the unit on the name. Off by default in Mimir,
+      ## so without this the counters land as `dice_rolls` and
+      ## `traces_span_metrics_calls`, and the histogram as
+      ## `traces_span_metrics_duration_bucket`. With it on they become
+      ## `dice_rolls_total`, `traces_span_metrics_calls_total`, and
+      ## `traces_span_metrics_duration_milliseconds_*`, which is the OpenMetrics
+      ## convention every Prometheus user and Grafana's shipped RED dashboards
+      ## expect (`rate(..._total[5m])`). See docs/adr/014.
+      otel_metric_suffixes_enabled: true

@@ -313,6 +313,77 @@ verify_step3() {
   assert_contains "Loki has a sample-api log line with a trace_id" 'rolled a' "${resp:-}"
 }
 
+verify_step4a() {
+  echo "Step 4a - Mimir backend + Grafana datasource:"
+
+  local appstate
+  appstate=$($KUBECTL -n argocd get application mimir \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "mimir Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # Mimir runs as microservices (ingest-storage), not one binary. The ingester
+  # is the write-path core: a ready ingester proves the OTLP write path can land
+  # samples. It is a StatefulSet, so readyReplicas is the check.
+  local ready
+  ready=$($KUBECTL -n observability get statefulset mimir-ingester \
+    -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  assert_ge "mimir-ingester StatefulSet ready" 1 "$ready"
+
+  # The datasource sidecar loaded the Mimir datasource. It speaks the Prometheus
+  # query API, so the type is prometheus (there is no mimir datasource type).
+  local ds
+  ds=$(curl -s -u "admin:${GRAFANA_PW}" "${GRAFANA_URL}/api/datasources" 2>/dev/null)
+  assert_contains "Grafana has a Mimir (prometheus) datasource" '"type":"prometheus"' "$ds"
+}
+
+verify_step4b() {
+  echo "Step 4b - a span metric and the app counter queryable in Mimir:"
+
+  # Drive traffic so the app emits spans (-> span metrics) and increments its
+  # dice.rolls counter (-> direct metric). Short-lived in-cluster curl pod, same
+  # idiom as step2e/step3.
+  if $KUBECTL -n demo run metric-gen --rm -i --restart=Never \
+    --image=curlimages/curl:latest --command -- \
+    sh -c 'for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done' \
+    >/dev/null 2>&1; then
+    pass "drove traffic to sample-api /rolldice"
+  else
+    fail "drove traffic to sample-api /rolldice"
+  fi
+
+  # Query Mimir through the Grafana datasource proxy. The Mimir datasource URL
+  # already ends in /prometheus, so the proxy path appends /api/v1/query to it.
+  # Two metrics prove the two paths (see docs/adr/014, docs/adr/015):
+  #   - traces_span_metrics_calls_total : RED metric the span_metrics connector
+  #     derives from traces (no app change). The _total suffix needs Mimir's
+  #     otel_metric_suffixes_enabled, which values.yaml sets.
+  #   - dice_rolls_total : the app's own SDK counter, the direct path.
+  # Both are pushed then ingested asynchronously (SDK exports ~60s, span metrics
+  # flush on their own interval), so retry generously.
+  local span_resp="" dice_resp=""
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if [ -z "$span_resp" ] || [ "$span_resp" = "empty" ]; then
+      span_resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
+        "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/query" \
+        --data-urlencode 'query=traces_span_metrics_calls_total{service_name="sample-api"}' 2>/dev/null)
+    fi
+    if [ -z "$dice_resp" ] || [ "$dice_resp" = "empty" ]; then
+      dice_resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
+        "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/query" \
+        --data-urlencode 'query=dice_rolls_total' 2>/dev/null)
+    fi
+    # A non-empty Prometheus vector has a "metric" object in its result array.
+    case "$span_resp" in *'"metric"'*) : ;; *) span_resp="empty" ;; esac
+    case "$dice_resp" in *'"metric"'*) : ;; *) dice_resp="empty" ;; esac
+    [ "$span_resp" != "empty" ] && [ "$dice_resp" != "empty" ] && break
+    sleep 5
+  done
+  assert_contains "Mimir returns a sample-api span metric (traces_span_metrics_calls_total)" \
+    '"metric"' "$span_resp"
+  assert_contains "Mimir returns the app counter (dice_rolls_total)" \
+    '"metric"' "$dice_resp"
+}
+
 verify_injection() {
   echo "Injection - the webhook injects the auto-instrumentation init-container:"
 
@@ -343,11 +414,14 @@ case "${1:-all}" in
   step2d) verify_step2d ;;
   step2e) verify_step2e ;;
   step3)  verify_step3 ;;
+  step4a) verify_step4a ;;
+  step4b) verify_step4b ;;
   injection) verify_injection ;;
   all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; \
           verify_step2c; echo; verify_step2d; echo; verify_step2e; echo; verify_step3; echo; \
+          verify_step4a; echo; verify_step4b; echo; \
           verify_injection ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|injection|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|injection|all]" >&2; exit 2 ;;
 esac
 
 echo
