@@ -61,8 +61,12 @@ data:
               summary: "High p95 latency for {{ $labels.job }}"
               description: "{{ $labels.job }} p95 latency is {{ $value | printf \"%.0f\" }}ms over 5m (threshold 500ms)."
 
+          # Keyed on service_name, not job: Mimir sets job to
+          # "<namespace>/<service.name>" (here demo/sample-api) because the app has
+          # a service.namespace, so job="sample-api" would never exist and this
+          # would fire forever. service_name is the stable identity.
           - alert: AppNoRequests
-            expr: absent(traces_span_metrics_calls_total{job="sample-api"})
+            expr: absent(traces_span_metrics_calls_total{service_name="sample-api"})
             for: 10m
             labels:
               severity: warning

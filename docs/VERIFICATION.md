@@ -640,7 +640,8 @@ Alertmanager StatefulSet. `verify-step5d` asserts the dashboard imported at
 `uid app-red`. The same checks by hand:
 
 ```sh
-kubectl -n observability get statefulset mimir-ruler mimir-alertmanager   # READY 1/1
+kubectl -n observability get deploy mimir-ruler              # READY 1/1 (ruler is a Deployment)
+kubectl -n observability get statefulset mimir-alertmanager  # READY 1/1
 
 # Rules registered in the ruler (through the Grafana proxy):
 curl -s -u admin:otel-lab-admin \
@@ -651,7 +652,7 @@ kubectl -n demo run metric-gen --rm -i --restart=Never --image=curlimages/curl:l
   sh -c 'for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done'
 curl -s -u admin:otel-lab-admin -G \
   http://localhost:3000/api/datasources/proxy/uid/mimir/api/v1/query \
-  --data-urlencode 'query=job:span_requests:rate5m{job="sample-api"}'
+  --data-urlencode 'query=job:span_requests:rate5m'
 
 # Dashboard imported:
 curl -s -u admin:otel-lab-admin http://localhost:3000/api/dashboards/uid/app-red | grep -o '"uid":"app-red"'

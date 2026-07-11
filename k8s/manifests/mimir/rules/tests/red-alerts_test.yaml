@@ -64,11 +64,11 @@ tests:
               summary: "High p95 latency for sample-api"
               description: "sample-api p95 latency is 975ms over 5m (threshold 500ms)."
 
-  # No requests: only a different job has traffic, so the sample-api selector is
-  # absent and AppNoRequests fires (absent() carries the job="sample-api" label).
+  # No requests: only a different service has traffic, so the sample-api selector
+  # is absent and AppNoRequests fires (absent() carries the service_name label).
   - interval: 1m
     input_series:
-      - series: 'traces_span_metrics_calls_total{job="other", status_code="STATUS_CODE_OK"}'
+      - series: 'traces_span_metrics_calls_total{service_name="other", status_code="STATUS_CODE_OK"}'
         values: "0+10x15"
     alert_rule_test:
       - eval_time: 11m
@@ -76,7 +76,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: sample-api
+              service_name: sample-api
             exp_annotations:
               summary: "No requests observed for sample-api"
               description: "No span-derived request metrics for sample-api in 10m; the app or its metrics pipeline may be down."

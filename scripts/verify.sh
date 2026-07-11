@@ -413,10 +413,12 @@ verify_step5a() {
     -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
   assert_eq "mimir Application Synced/Healthy" "Synced/Healthy" "$appstate"
 
+  # The ruler is a Deployment in mimir-distributed; only the alertmanager is a
+  # StatefulSet (it has a PVC).
   local ruler_ready am_ready
-  ruler_ready=$($KUBECTL -n observability get statefulset mimir-ruler \
-    -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
-  assert_ge "mimir-ruler StatefulSet ready" 1 "$ruler_ready"
+  ruler_ready=$($KUBECTL -n observability get deployment mimir-ruler \
+    -o jsonpath='{.status.availableReplicas}' 2>/dev/null)
+  assert_ge "mimir-ruler Deployment ready" 1 "$ruler_ready"
   am_ready=$($KUBECTL -n observability get statefulset mimir-alertmanager \
     -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
   assert_ge "mimir-alertmanager StatefulSet ready" 1 "$am_ready"
@@ -455,12 +457,16 @@ verify_step5b() {
     fail "drove traffic to sample-api /rolldice"
   fi
 
-  # The ruler evaluates on an interval, so retry generously.
+  # The ruler evaluates on an interval, and the span metric has to reach Mimir
+  # first (the SDK/connector export on ~60s), then rate[5m] needs a couple of
+  # samples, so retry generously. No job filter: Mimir sets job to
+  # "<namespace>/<service.name>" (demo/sample-api), and this is the only job that
+  # produces span metrics, so the bare recording series is enough proof.
   local rec_resp="empty"
-  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
     rec_resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
       "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/query" \
-      --data-urlencode 'query=job:span_requests:rate5m{job="sample-api"}' 2>/dev/null)
+      --data-urlencode 'query=job:span_requests:rate5m' 2>/dev/null)
     case "$rec_resp" in *'"metric"'*) break ;; *) rec_resp="empty" ;; esac
     sleep 5
   done

@@ -258,11 +258,14 @@ step4b: sample-image bootstrap
 .PHONY: step5a
 step5a: bootstrap
 	@echo
-	@echo "Waiting for mimir to re-sync with the ruler + Alertmanager enabled..."
-	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
-	  application/mimir --timeout=600s
-	@echo "Waiting for the ruler and alertmanager StatefulSets..."
-	@kubectl -n $(OBS_NS) rollout status statefulset/mimir-ruler --timeout=300s
+	@echo "Waiting for Argo to sync the ruler + Alertmanager into the cluster..."
+	@for i in $$(seq 1 60); do \
+	  kubectl -n $(OBS_NS) get deploy/mimir-ruler >/dev/null 2>&1 && \
+	  kubectl -n $(OBS_NS) get statefulset/mimir-alertmanager >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the ruler Deployment and Alertmanager StatefulSet to be ready..."
+	@kubectl -n $(OBS_NS) rollout status deployment/mimir-ruler --timeout=300s
 	@kubectl -n $(OBS_NS) rollout status statefulset/mimir-alertmanager --timeout=300s
 	@echo
 	@$(MAKE) status
