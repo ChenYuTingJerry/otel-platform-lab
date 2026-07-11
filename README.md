@@ -61,9 +61,13 @@ apps/sample-api/            FastAPI sample service (Step 2d), its own mini-proje
 k8s/manifests/otel-injection/  Operator injection templates (Instrumentation CRs)
 config/                     Reserved. The Collector pipeline lives inline in
                             k8s/manifests/collector/values.yaml, not here.
+docs/ARCHITECTURE.md        Overall architecture: diagrams + all ADRs at a glance
 docs/adr/                   Architecture decision records
 docs/signal-strategy.md     How logs, metrics, and traces split work
 ```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the runtime and GitOps
+diagrams and a one-line summary of every decision.
 
 ## Build order
 
