@@ -78,6 +78,9 @@ Each step is verified end-to-end before the next one starts.
 2. [x] Step 2 - OTel Collector + Tempo, traces from a sample app
 3. [x] Step 3 - Loki logs pipeline with trace_id to logs pivot
 4. [x] Step 4 - Mimir metrics (span metrics + direct)
+5. [x] Step 5 - App RED alerting (Mimir ruler + Alertmanager) + RED dashboard
+6. [x] Step 6a - Platform self-health (k8s_cluster workload alerts + dashboard)
+7. [x] Step 6b - Opt-in node-local log-filtering agent (DaemonSet, Topology B)
 
 ## Design constraints (deliberate)
 

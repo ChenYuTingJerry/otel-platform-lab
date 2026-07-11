@@ -1,0 +1,125 @@
+## OpenTelemetry Collector AGENT (Step 6b), the opt-in node-local tier.
+##
+## This is a SECOND Collector, deployed as a DaemonSet (one pod per node), in
+## front of the gateway. It is not a replacement: the gateway (mode: deployment,
+## k8s/manifests/collector/values.yaml) stays as the single egress and keeps the
+## cluster-singleton work (span_metrics, k8s_cluster). See docs/adr/009 and
+## docs/adr/019.
+##
+## Purpose: filter unwanted logs HERE, node-local, before they reach the gateway,
+## so dropped volume never crosses the network or eats gateway capacity. Only the
+## sample app's OTLP LOGS are routed here (via OTEL_EXPORTER_OTLP_LOGS_ENDPOINT on
+## the app Deployment); its traces and metrics still go straight to the gateway.
+##
+## Opt-in: this whole tier exists only while its Argo Application file is present
+## and the app's log endpoint points at it. Default topology is single-gateway.
+##
+## Single-node note: apps reach the agent through a normal ClusterIP Service. On a
+## real multi-node cluster you would pin each app to its LOCAL agent (hostIP +
+## hostPort, or the operator's node-local injection), so the drop happens on the
+## same node. On one k3d node there is nothing to pin, so a Service is equivalent
+## and simpler. See docs/adr/019.
+
+## One pod per node. This is the only line that makes it an agent tier.
+mode: daemonset
+
+## Base name "otel-agent" (distinct from the gateway's "otel-collector"). Note the
+## chart appends "-agent" to the workload in daemonset mode, so the DaemonSet and
+## ConfigMap are "otel-agent-agent" while the Service stays "otel-agent" (which is
+## what the app addresses).
+fullnameOverride: otel-agent
+
+## Same distro as the gateway, so the filter processor and otlp_grpc exporter are
+## present without a contrib image.
+image:
+  repository: otel/opentelemetry-collector-k8s
+
+## A thin logs hop, so it needs little.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+
+## Drop the chart's default extra ingress ports we never use.
+ports:
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+
+## In daemonset mode the chart does not create a Service by default (a DaemonSet
+## is usually reached per-node). We enable it so the app can address the agent by
+## a stable DNS name, otel-agent.observability.svc.cluster.local (single-node
+## simplification, see the note above).
+service:
+  enabled: true
+
+config:
+  receivers:
+    ## Drop chart-default receivers we do not use.
+    jaeger: null
+    zipkin: null
+    prometheus: null
+    ## Receive the app's OTLP logs. gRPC 4317 and HTTP 4318, same as the gateway;
+    ## the app hits HTTP 4318 (/v1/logs).
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+  processors:
+    ## memory_limiter first, same reasoning as the gateway: backpressure instead
+    ## of an OOM kill.
+    memory_limiter:
+      check_interval: 1s
+      limit_percentage: 80
+      spike_limit_percentage: 25
+    ## The point of Step 6b. Drop unwanted logs node-local, before the gateway.
+    ## Each entry is an OTTL condition; if ANY is true the record is dropped. The
+    ## same OTTL works on the gateway too, so this is about WHERE we drop (on the
+    ## node, off the gateway's back), not extra power (docs/adr/019).
+    ##
+    ## Guardrail: every condition is gated below WARN, so ERROR (severity 17+) is
+    ## never dropped. This is the fix for the old "non-JSON = drop" bluntness:
+    ## filter by severity/content/source, and never let it swallow errors.
+    filter/log-noise:
+      error_mode: ignore
+      logs:
+        log_record:
+          # 1) severity: drop DEBUG/TRACE (1-8); keep unspecified(0) and INFO+(9+).
+          - 'severity_number > 0 and severity_number < SEVERITY_NUMBER_INFO'
+          # 2) content: drop health/probe chatter, but only below WARN so a real
+          #    error whose text mentions a probe path still gets through.
+          - 'severity_number < SEVERITY_NUMBER_WARN and IsMatch(body, ".*(healthz|readiness|liveness).*")'
+          # 3) source dimension, shown but commented out (our app lives in demo,
+          #    not kube-system; this is here to show the vocabulary):
+          # - 'resource.attributes["k8s.namespace.name"] == "kube-system"'
+    batch: {}
+  exporters:
+    ## Drop the chart's default debug exporter.
+    debug: null
+    ## Forward the kept logs to the gateway over OTLP gRPC. The gateway then runs
+    ## its own logs pipeline (resource enrich, export to Loki) unchanged. Type is
+    ## otlp_grpc, matching the gateway's snake_case component naming.
+    otlp_grpc/gateway:
+      endpoint: otel-collector.observability.svc.cluster.local:4317
+      tls:
+        insecure: true
+  service:
+    pipelines:
+      ## Logs only. Remove the chart's default traces/metrics pipelines (they
+      ## would otherwise reference the debug exporter we just nulled). Nulling a
+      ## pipeline is how this chart drops a default (same as the null receivers).
+      traces: null
+      metrics: null
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, filter/log-noise, batch]
+        exporters: [otlp_grpc/gateway]

@@ -21,9 +21,14 @@ logging.basicConfig(level=logging.INFO)
 
 # Set the level on our own logger explicitly. When the operator has already
 # attached its OTLP handler to the root logger, basicConfig does not lower the
-# root level, so without this an INFO record would be dropped before export.
+# root level, so without this a record would be dropped before export.
+#
+# DEBUG (not INFO) on purpose, for the Step 6b log-filter demo: /rolldice emits
+# one DEBUG "dice.debug" line as sample noise. We keep the record flowing out of
+# the app so the node-local agent (not the app) is the thing that drops it. See
+# docs/adr/019. Only this logger is at DEBUG, so no library debug flood.
 logger = logging.getLogger("sample_api")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 app = FastAPI(title="sample-api")
 
@@ -50,9 +55,14 @@ def healthz():
 @app.get("/rolldice")
 def rolldice():
     """The traffic endpoint. One server span, a log line carrying its trace_id,
-    and a counter increment. One request, all three signals."""
+    and a counter increment. One request, all three signals.
+
+    It also emits one DEBUG line ("dice.debug"). This is sample log noise for the
+    Step 6b filter demo: the node-local agent drops DEBUG, so this line never
+    reaches Loki, while the INFO "rolled a" line below does. See docs/adr/019."""
     result = random.randint(1, 6)
     dice_rolls.add(1)
+    logger.debug("dice.debug internal roll detail: %s (Step 6b filter noise)", result)
     logger.info("rolled a %s", result)
     return {"roll": result}
 

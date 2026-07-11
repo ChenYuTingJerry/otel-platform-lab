@@ -1,0 +1,50 @@
+## Argo Application: OpenTelemetry Collector AGENT (Step 6b), the opt-in
+## node-local tier. Same multi-source chart+$values shape as the gateway
+## `collector` Application:
+##   source 0 - the opentelemetry-collector Helm chart (mode: daemonset)
+##   source 1 - this Git repo as `$values`, for values.yaml
+##
+## This is a SECOND release of the same chart (releaseName otel-agent), a
+## DaemonSet in front of the gateway, not a replacement. It filters logs
+## node-local before they reach the gateway. See docs/adr/009 and docs/adr/019.
+##
+## Optional topology: deleting this file removes the agent tier (Argo prunes it),
+## and the app falls back to sending logs straight to the gateway. So the whole
+## Step 6b tier is toggled by the presence of this file plus the app's
+## OTEL_EXPORTER_OTLP_LOGS_ENDPOINT.
+##
+## sync-wave 2: same tier as the gateway. The agent retries its OTLP export until
+## the gateway Service exists, so strict ordering is not needed.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: collector-agent
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  sources:
+    - repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+      chart: opentelemetry-collector
+      targetRevision: 0.162.0
+      helm:
+        releaseName: otel-agent
+        valueFiles:
+          - $values/k8s/manifests/collector-agent/values.yaml
+    - repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

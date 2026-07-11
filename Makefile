@@ -32,6 +32,7 @@ help:
 	@echo "  make step5c            - Step 5c: webhook sink for fired alerts"
 	@echo "  make step5d            - Step 5d: dashboards sidecar + RED dashboard"
 	@echo "  make step6a            - Step 6a: platform self-health (k8s_cluster + alerts + dashboard)"
+	@echo "  make step6b            - Step 6b: opt-in node-local log-filtering agent (DaemonSet)"
 	@echo
 	@echo "Tests (assert state, exit non-zero on failure):"
 	@echo "  make verify            - run every implemented step's checks"
@@ -49,6 +50,7 @@ help:
 	@echo "  make verify-step5c     - assert the webhook sink is up and the AM path is reachable"
 	@echo "  make verify-step5d     - assert the RED dashboard loaded into Grafana"
 	@echo "  make verify-step6a     - assert k8s_cluster metrics, platform alerts + dashboard"
+	@echo "  make verify-step6b     - assert the agent filters DEBUG logs, keeps INFO"
 	@echo "  make test-rules        - unit-test the RED + platform rules with promtool (local)"
 	@echo "  make verify-injection  - assert the webhook injects into a fresh pod"
 	@echo
@@ -351,6 +353,31 @@ step6a: bootstrap
 	@echo
 	@$(MAKE) status
 
+## Step 6b: opt-in node-local log-filtering agent. Adds a second Collector as a
+## DaemonSet (collector-agent Application) in front of the gateway, and routes the
+## app's OTLP logs to it so it can drop DEBUG/probe noise before the gateway. The
+## app code changed (a DEBUG line) and its Deployment gained a logs endpoint, so
+## this rebuilds the image and applies the root app (idempotent). Argo discovers
+## the collector-agent Application and re-syncs sample-app (new image + env, which
+## rolls the pod). Waits for both Healthy. Assumes Step 2 is up (gateway + app).
+.PHONY: step6b
+step6b: sample-image bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the collector-agent Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/collector-agent >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the collector-agent and sample-app Applications to be Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/collector-agent --timeout=300s
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/sample-app --timeout=180s
+	@echo "(the new logs endpoint env rolls sample-api, so it also picks up the new image)"
+	@kubectl -n $(DEMO_NS) rollout status deploy/sample-api --timeout=180s
+	@echo
+	@$(MAKE) status
+
 ## Unit-test the RED rules with promtool, locally, no cluster needed. The rules
 ## live inline in configmap.yaml (the single source), so first extract that data
 ## key into a transient rendered file next to the tests (ruby ships with macOS),
@@ -373,7 +400,7 @@ test-rules:
 	  exit $$status
 
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-step5a verify-step5b verify-step5c verify-step5d verify-step6a verify-injection
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-step5a verify-step5b verify-step5c verify-step5d verify-step6a verify-step6b verify-injection
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -406,6 +433,8 @@ verify-step5d:
 	@./scripts/verify.sh step5d
 verify-step6a:
 	@./scripts/verify.sh step6a
+verify-step6b:
+	@./scripts/verify.sh step6b
 verify-injection:
 	@./scripts/verify.sh injection
 

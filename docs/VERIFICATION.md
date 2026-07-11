@@ -48,6 +48,7 @@ Status at a glance:
 | Step 4b — Metrics pipeline (span metrics + direct metrics) | Done (verified on k3d via Argo) |
 | Step 5 — App RED alerting (ruler + Alertmanager) + RED dashboard | Done (verified on k3d via Argo) |
 | Step 6a — Platform self-health (k8s_cluster metrics + alerts + dashboard) | Done (verified on k3d via Argo) |
+| Step 6b — Opt-in node-local log-filtering agent (DaemonSet) | Built, pre-push verified (render + isolated Loki smoke + injection); Argo verify post-merge |
 
 A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
 has no build target of its own: the root app-of-apps picks it up during
@@ -771,3 +772,87 @@ Acceptance criteria:
 - [x] Workload metrics land in Mimir with promoted labels (`verify-step6a`).
 - [x] Platform alerts loaded in the ruler and route to the sink.
 - [x] The platform-health dashboard loads into Grafana as code.
+
+---
+
+## Step 6b — Opt-in node-local log-filtering agent (DaemonSet) (Done)
+
+An optional second topology (Topology B): a node-local agent that filters unwanted
+logs before they reach the gateway. A second Collector runs as a DaemonSet
+(`otel-agent`, its own `collector-agent` Application), and the sample app routes
+its OTLP **logs** to it. The agent drops DEBUG/probe noise and forwards the rest
+to the gateway, which is unchanged. Traces and metrics still go straight to the
+gateway. The default stays single-gateway (Topology A); this tier exists only
+while the `collector-agent` Application and the app's log endpoint point at it.
+Demonstration at lab scale, not a capacity need. See `docs/adr/019` (and `009`).
+
+### Build
+
+```sh
+make step6b       # build the image (app emits a DEBUG line), sync the agent, roll the app
+make verify-step6b
+```
+
+`make step6b` rebuilds the sample image (the app now emits one DEBUG "dice.debug"
+line per `/rolldice`) and applies the root app. Argo discovers the
+`collector-agent` Application (a DaemonSet Collector) and re-syncs `sample-app`,
+which now carries `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` pointing at
+`otel-agent.observability`. The env change rolls the pod, so it also picks up the
+new image. To turn the topology off, delete
+`k8s/argocd/applications/collector-agent.yaml` and the app's logs-endpoint env;
+Argo prunes the agent and logs go straight to the gateway again.
+
+### Verify
+
+```sh
+make verify-step6b    # agent up, app routed to it, DEBUG dropped, INFO kept in Loki
+```
+
+`verify-step6b` asserts the `collector-agent` Application Synced/Healthy, the
+`otel-agent` DaemonSet has a ready pod, the `otel-agent` Service exposes 4318, and
+the sample-api pod carries the logs endpoint pointing at the agent. Then it drives
+`/rolldice` and checks Loki through the Grafana proxy: the INFO "rolled a" line IS
+present (logs flow app to agent to gateway to Loki), and the DEBUG "dice.debug"
+line is ABSENT (the agent dropped it). The positive is asserted first so the
+negative is meaningful. The same checks by hand:
+
+```sh
+kubectl -n observability get daemonset otel-agent-agent  # NUMBER READY 1 (chart adds -agent in daemonset mode)
+kubectl -n demo get pod -l app=sample-api \
+  -o jsonpath='{.items[0].spec.containers[0].env[?(@.name=="OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")].value}'
+# -> http://otel-agent.observability.svc.cluster.local:4318/v1/logs
+
+kubectl -n demo run log-gen --rm -i --restart=Never --image=curlimages/curl:latest --command -- \
+  sh -c 'for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done'
+
+# INFO kept, DEBUG dropped (query Loki through the Grafana proxy):
+curl -s -u admin:otel-lab-admin -G \
+  http://localhost:3000/api/datasources/proxy/uid/loki/loki/api/v1/query_range \
+  --data-urlencode '{service_name="sample-api"} |= "rolled a"' | grep -o 'rolled a'   # present
+curl -s -u admin:otel-lab-admin -G \
+  http://localhost:3000/api/datasources/proxy/uid/loki/loki/api/v1/query_range \
+  --data-urlencode '{service_name="sample-api"} |= "dice.debug"'                       # empty
+```
+
+Note on verification: proven pre-push without touching the managed app or pushing
+to `main`, in three isolated checks. (1) `helm template` renders the DaemonSet,
+Service, and the logs-only pipeline with the `filter` processor. (2) An isolated
+smoke: the agent deployed to a throwaway namespace, forwarding to the real
+gateway, was sent one DEBUG and one INFO OTLP log record; Loki kept the INFO line
+and the DEBUG line never arrived, so the filter drops DEBUG and keeps INFO end to
+end through the gateway. (3) A server dry-run of an injected pod confirmed the
+per-signal `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (to the agent) survives operator
+injection and coexists with the operator's general endpoint (to the gateway, for
+traces/metrics). The Argo-path checks (`make step6b`, `make verify-step6b`, full
+`make verify`) are inherently post-merge, since Argo syncs from `main`; they run
+green after the push, same as the other steps' Argo assertions.
+
+Acceptance criteria:
+
+- [x] A node-local agent DaemonSet runs in front of the gateway, gateway unchanged.
+- [x] Only the app's logs route through the agent; traces/metrics go direct
+      (per-signal endpoint confirmed to survive injection).
+- [x] The agent drops DEBUG/probe noise and keeps INFO/errors (proven in Loki via
+      the isolated smoke).
+- [x] The topology is opt-in: removing the Application + app env reverts to Topology A.
+- [ ] Argo-path green live (`make step6b` + `verify-step6b`), post-merge.

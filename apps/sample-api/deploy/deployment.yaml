@@ -38,6 +38,17 @@ spec:
             ## name derivation.
             - name: OTEL_SERVICE_NAME
               value: sample-api
+            ## Step 6b (opt-in): send LOGS to the node-local agent, not straight
+            ## to the gateway. This per-signal endpoint overrides the operator's
+            ## injected OTEL_EXPORTER_OTLP_ENDPOINT for logs only; traces and
+            ## metrics still use that general endpoint (the gateway). The operator
+            ## sets no per-signal logs endpoint, so this survives injection. Full
+            ## path is required: the SDK does not append /v1/logs to a per-signal
+            ## endpoint. Protocol is http/protobuf (from the Instrumentation CR),
+            ## hence port 4318. Remove this env to fall back to the single-gateway
+            ## topology. See docs/adr/019.
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: http://otel-agent.observability.svc.cluster.local:4318/v1/logs
           readinessProbe:
             httpGet:
               path: /healthz

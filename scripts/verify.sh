@@ -41,6 +41,14 @@ assert_ge() {
   if [ "${3:-0}" -ge "$2" ] 2>/dev/null; then pass "$1"; else fail "$1 (expected >= $2, got '${3:-}')"; fi
 }
 
+# assert_not_contains <desc> <needle> <haystack>
+assert_not_contains() {
+  case "$3" in
+    *"$2"*) fail "$1 (found '$2', expected absent)" ;;
+    *) pass "$1" ;;
+  esac
+}
+
 verify_step0() {
   echo "Step 0 - scaffold (cluster + ArgoCD):"
 
@@ -570,6 +578,77 @@ verify_step6a() {
     '"uid":"platform-health"' "$dash_resp"
 }
 
+verify_step6b() {
+  echo "Step 6b - node-local log-filtering agent (opt-in agent+gateway topology):"
+
+  # The agent is its own Argo Application (a second Collector release, DaemonSet).
+  local appstate
+  appstate=$($KUBECTL -n argocd get application collector-agent \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "collector-agent Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # The agent runs as a DaemonSet (one pod per node), not a Deployment. In
+  # daemonset mode the chart names the workload <fullname>-agent, so the DaemonSet
+  # is otel-agent-agent while the Service (below) stays otel-agent.
+  local ds_ready
+  ds_ready=$($KUBECTL -n observability get daemonset otel-agent-agent \
+    -o jsonpath='{.status.numberReady}' 2>/dev/null)
+  assert_ge "otel-agent DaemonSet has a ready pod" 1 "$ds_ready"
+
+  # The app reaches the agent through this Service (single-node simplification).
+  local svc
+  svc=$($KUBECTL -n observability get svc otel-agent \
+    -o jsonpath='{.spec.ports[?(@.port==4318)].port}' 2>/dev/null)
+  assert_eq "otel-agent Service exposes OTLP HTTP 4318" "4318" "$svc"
+
+  # The sample app routes its LOGS to the agent (per-signal endpoint). Traces and
+  # metrics are untouched and still go to the gateway.
+  local logs_ep
+  logs_ep=$($KUBECTL -n demo get pod -l app=sample-api \
+    -o jsonpath='{.items[0].spec.containers[0].env[?(@.name=="OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")].value}' 2>/dev/null)
+  assert_contains "sample-api logs endpoint points at otel-agent" "otel-agent.observability" "$logs_ep"
+
+  # Drive traffic: each /rolldice emits a DEBUG "dice.debug" line (noise) and an
+  # INFO "rolled a" line. The agent must drop the DEBUG and keep the INFO.
+  if $KUBECTL -n demo run log-gen-6b --rm -i --restart=Never \
+    --image=curlimages/curl:latest --command -- \
+    sh -c 'for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done' \
+    >/dev/null 2>&1; then
+    pass "drove traffic to sample-api /rolldice"
+  else
+    fail "drove traffic to sample-api /rolldice"
+  fi
+
+  # Positive first: the INFO line must reach Loki (proves logs flow app -> agent ->
+  # gateway -> Loki, and the query window is right). Retry, ingestion is async.
+  local start end info_resp="empty"
+  end=$(( $(date +%s) * 1000000000 ))
+  start=$(( ($(date +%s) - 3600) * 1000000000 ))
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    info_resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
+      "${GRAFANA_URL}/api/datasources/proxy/uid/loki/loki/api/v1/query_range" \
+      --data-urlencode 'query={service_name="sample-api"} |= "rolled a"' \
+      --data-urlencode "start=${start}" --data-urlencode "end=${end}" \
+      --data-urlencode 'limit=5' 2>/dev/null)
+    case "$info_resp" in *'rolled a'*) break ;; *) info_resp="empty" ;; esac
+    sleep 5
+  done
+  assert_contains "Loki kept the INFO 'rolled a' line (passed the filter)" 'rolled a' "$info_resp"
+
+  # Negative: the DEBUG line must NOT be in Loki. It was emitted in the same
+  # requests as the INFO line above, so if the INFO line arrived, the DEBUG line
+  # would have too had it not been dropped. Query the marker; expect no results.
+  local end2 debug_resp
+  end2=$(( $(date +%s) * 1000000000 ))
+  debug_resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
+    "${GRAFANA_URL}/api/datasources/proxy/uid/loki/loki/api/v1/query_range" \
+    --data-urlencode 'query={service_name="sample-api"} |= "dice.debug"' \
+    --data-urlencode "start=${start}" --data-urlencode "end=${end2}" \
+    --data-urlencode 'limit=5' 2>/dev/null)
+  assert_not_contains "Loki dropped the DEBUG 'dice.debug' line (agent filtered it)" \
+    'dice.debug' "$debug_resp"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
@@ -586,14 +665,15 @@ case "${1:-all}" in
   step5c) verify_step5c ;;
   step5d) verify_step5d ;;
   step6a) verify_step6a ;;
+  step6b) verify_step6b ;;
   injection) verify_injection ;;
   all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; \
           verify_step2c; echo; verify_step2d; echo; verify_step2e; echo; verify_step3; echo; \
           verify_step4a; echo; verify_step4b; echo; \
           verify_step5a; echo; verify_step5b; echo; verify_step5c; echo; verify_step5d; echo; \
-          verify_step6a; echo; \
+          verify_step6a; echo; verify_step6b; echo; \
           verify_injection ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|step5a|step5b|step5c|step5d|step6a|injection|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|step5a|step5b|step5c|step5d|step6a|step6b|injection|all]" >&2; exit 2 ;;
 esac
 
 echo
