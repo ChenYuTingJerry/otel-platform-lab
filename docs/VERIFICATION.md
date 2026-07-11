@@ -48,7 +48,7 @@ Status at a glance:
 | Step 4b — Metrics pipeline (span metrics + direct metrics) | Done (verified on k3d via Argo) |
 | Step 5 — App RED alerting (ruler + Alertmanager) + RED dashboard | Done (verified on k3d via Argo) |
 | Step 6a — Platform self-health (k8s_cluster metrics + alerts + dashboard) | Done (verified on k3d via Argo) |
-| Step 6b — Opt-in node-local log-filtering agent (DaemonSet) | Built, pre-push verified (render + isolated Loki smoke + injection); Argo verify post-merge |
+| Step 6b — Opt-in node-local log-filtering agent (DaemonSet) | Done (verified on k3d via Argo) |
 
 A full clean rebuild runs the done steps in order. The OTel Operator (Step 2a)
 has no build target of its own: the root app-of-apps picks it up during
@@ -843,16 +843,18 @@ and the DEBUG line never arrived, so the filter drops DEBUG and keeps INFO end t
 end through the gateway. (3) A server dry-run of an injected pod confirmed the
 per-signal `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (to the agent) survives operator
 injection and coexists with the operator's general endpoint (to the gateway, for
-traces/metrics). The Argo-path checks (`make step6b`, `make verify-step6b`, full
-`make verify`) are inherently post-merge, since Argo syncs from `main`; they run
-green after the push, same as the other steps' Argo assertions.
+traces/metrics). Then live on k3d through Argo (commit 2d03e74): the `collector-agent` Application
+synced (the `otel-agent-agent` DaemonSet came up ready), the sample app rolled
+onto the new image and its logs endpoint, and `make verify-step6b` is green (7/7),
+including the same DEBUG-dropped / INFO-kept check through the managed app path.
+Full `make verify` is green (74/74), so the single-gateway path did not regress
+(traces and metrics still reach the gateway directly).
 
 Acceptance criteria:
 
 - [x] A node-local agent DaemonSet runs in front of the gateway, gateway unchanged.
 - [x] Only the app's logs route through the agent; traces/metrics go direct
       (per-signal endpoint confirmed to survive injection).
-- [x] The agent drops DEBUG/probe noise and keeps INFO/errors (proven in Loki via
-      the isolated smoke).
+- [x] The agent drops DEBUG/probe noise and keeps INFO/errors (verified in Loki).
 - [x] The topology is opt-in: removing the Application + app env reverts to Topology A.
-- [ ] Argo-path green live (`make step6b` + `verify-step6b`), post-merge.
+- [x] Argo-path green live (`make verify-step6b` 7/7, full `make verify` 74/74).
