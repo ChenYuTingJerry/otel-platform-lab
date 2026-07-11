@@ -1,0 +1,49 @@
+## Argo Application: cert-manager.
+##
+## Multi-source, same chart + $values shape as the other components:
+##   source 0 - the cert-manager Helm chart (with its CRDs)
+##   source 1 - this Git repo as `$values`, for values.yaml
+##
+## It exists to issue and rotate the OTel Operator's admission-webhook serving
+## cert and to keep the webhook caBundle in sync (through the CA injector). The
+## operator chart's own autoGenerateCert is non-deterministic under Argo, so the
+## webhook caBundle and the serving cert drift apart and injection breaks
+## silently. cert-manager fixes that at the root. See docs/adr/016, which
+## supersedes docs/adr/005.
+##
+## sync-wave -2: before the operator (wave 0). The operator's Certificate/Issuer
+## are cert-manager CRDs, and its Deployment mounts the issued Secret, so
+## cert-manager must be up first. The operator sync retries until this is
+## Healthy, so a first apply shows brief churn before it converges.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  sources:
+    - repoURL: https://charts.jetstack.io
+      chart: cert-manager
+      targetRevision: v1.21.0
+      helm:
+        releaseName: cert-manager
+        valueFiles:
+          - $values/k8s/manifests/cert-manager/values.yaml
+    - repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

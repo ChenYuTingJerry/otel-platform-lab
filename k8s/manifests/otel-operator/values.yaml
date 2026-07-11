@@ -5,14 +5,20 @@
 ##   - Instrumentation        (Step 2d: zero-code auto-instrumentation)
 ## and a mutating webhook that injects instrumentation into annotated pods.
 
-## The webhook needs a TLS cert. We self-generate it instead of depending on
-## cert-manager: this lab has one webhook and no serving TLS, so a shared cert
-## controller is not worth it yet. See docs/adr/005.
+## The webhook needs a TLS cert, and the webhook caBundle must stay the CA that
+## signed it. cert-manager issues that cert, rotates it, and keeps the caBundle
+## in sync through its CA injector (the webhook carries a
+## `cert-manager.io/inject-ca-from` annotation, no caBundle in git).
+##
+## We do NOT use the chart's autoGenerateCert. It regenerates a random cert on
+## every Helm render, so under Argo the Secret and the webhook caBundle come
+## from different renders and drift apart, which breaks injection silently. See
+## docs/adr/016, which supersedes docs/adr/005.
 admissionWebhooks:
   certManager:
-    enabled: false
-  autoGenerateCert:
     enabled: true
+  autoGenerateCert:
+    enabled: false
 
 ## Keep the operator light for local k3d.
 manager:

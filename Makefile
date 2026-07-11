@@ -36,6 +36,7 @@ help:
 	@echo "  make verify-step2d     - assert injection + sample app running"
 	@echo "  make verify-step2e     - assert one trace queryable in Tempo"
 	@echo "  make verify-step3      - assert Loki synced + a log line with trace_id"
+	@echo "  make verify-injection  - assert the webhook injects into a fresh pod"
 	@echo
 	@echo "Underlying targets:"
 	@echo "  make sample-image      - build the sample app image + import into k3d"
@@ -205,7 +206,7 @@ step3: bootstrap
 	@$(MAKE) status
 
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-injection
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -224,6 +225,8 @@ verify-step2e:
 	@./scripts/verify.sh step2e
 verify-step3:
 	@./scripts/verify.sh step3
+verify-injection:
+	@./scripts/verify.sh injection
 
 .PHONY: clean
 clean:

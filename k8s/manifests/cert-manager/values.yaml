@@ -1,0 +1,37 @@
+## cert-manager Helm values, read by Argo through the cert-manager Application.
+##
+## cert-manager issues and rotates the OTel Operator's admission-webhook serving
+## cert, and keeps the webhook's caBundle in sync through its CA injector. This
+## replaces the operator chart's autoGenerateCert, which regenerates a random
+## cert on every Helm render and so drifts under Argo. See docs/adr/016.
+##
+## Only the operator webhook uses cert-manager today. Kept deliberately small.
+
+## The chart ships its CRDs disabled. Install them with the chart so there is no
+## separate apply step. `crds.keep: true` is the chart default, so an Argo prune
+## does not delete the CRDs (and every Certificate/Issuer with them).
+crds:
+  enabled: true
+
+## Skip the startup API check. It adds a Job (and a hook pod) that blocks on the
+## webhook being reachable. The lab does not need that gate, and dropping it
+## keeps the sync clean.
+startupapicheck:
+  enabled: false
+
+## Keep the three controllers light for local k3d, same spirit as the other
+## components' values.
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi
+webhook:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+cainjector:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
