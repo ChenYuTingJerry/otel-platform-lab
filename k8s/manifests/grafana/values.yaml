@@ -27,8 +27,14 @@ sidecar:
     enabled: true
     label: grafana_datasource
     labelValue: "1"
+  ## Dashboards arrive the same way as datasources (Step 5d): the sidecar watches
+  ## for ConfigMaps labelled grafana_dashboard in this namespace and loads their
+  ## JSON at runtime. The RED dashboard ships from its own Application
+  ## (k8s/argocd/applications/grafana-dashboards.yaml). See docs/adr/017, ADR-007.
   dashboards:
-    enabled: false
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
 
 ## Keep the pod light for local k3d.
 resources:

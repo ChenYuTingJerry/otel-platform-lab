@@ -1,0 +1,82 @@
+# promtool unit tests for the RED rules. Run locally (or in CI) with:
+#   make test-rules
+# The rules live inline in ../configmap.yaml (the single source). `make test-rules`
+# extracts that data key into red-alerts.rendered.yaml (transient, gitignored) next
+# to this file, then runs promtool. So this checks exactly what the ruler loads.
+rule_files:
+  - red-alerts.rendered.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # High error ratio: 54 ok/min + 6 err/min -> error ratio 6/60 = 10% > 5%.
+  - interval: 1m
+    input_series:
+      - series: 'traces_span_metrics_calls_total{job="sample-api", status_code="STATUS_CODE_OK"}'
+        values: "0+54x20"
+      - series: 'traces_span_metrics_calls_total{job="sample-api", status_code="STATUS_CODE_ERROR"}'
+        values: "0+6x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AppHighErrorRatio
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: sample-api
+            exp_annotations:
+              summary: "High error ratio for sample-api"
+              description: "sample-api error ratio is 10% over 5m (threshold 5%)."
+
+  # High p95 latency: 100 observations per interval all land in the (500,1000]ms
+  # bucket, so histogram_quantile(0.95, ...) interpolates to ~975ms > 500ms.
+  - interval: 1m
+    input_series:
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="5"}'
+        values: "0+0x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="10"}'
+        values: "0+0x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="25"}'
+        values: "0+0x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="50"}'
+        values: "0+0x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="100"}'
+        values: "0+0x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="250"}'
+        values: "0+0x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="500"}'
+        values: "0+0x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="1000"}'
+        values: "0+100x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="2500"}'
+        values: "0+100x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="5000"}'
+        values: "0+100x20"
+      - series: 'traces_span_metrics_duration_milliseconds_bucket{job="sample-api", le="+Inf"}'
+        values: "0+100x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AppHighLatencyP95
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: sample-api
+            exp_annotations:
+              summary: "High p95 latency for sample-api"
+              description: "sample-api p95 latency is 975ms over 5m (threshold 500ms)."
+
+  # No requests: only a different job has traffic, so the sample-api selector is
+  # absent and AppNoRequests fires (absent() carries the job="sample-api" label).
+  - interval: 1m
+    input_series:
+      - series: 'traces_span_metrics_calls_total{job="other", status_code="STATUS_CODE_OK"}'
+        values: "0+10x15"
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: AppNoRequests
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: sample-api
+            exp_annotations:
+              summary: "No requests observed for sample-api"
+              description: "No span-derived request metrics for sample-api in 10m; the app or its metrics pipeline may be down."

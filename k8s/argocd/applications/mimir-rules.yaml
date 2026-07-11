@@ -1,0 +1,40 @@
+## Argo Application: the RED alert/recording rules for the Mimir ruler (Step 5b).
+##
+## Plain manifests under k8s/manifests/mimir/rules: a ConfigMap with the rules
+## inline (configmap.yaml) and a PostSync-hook Job that pushes them to the ruler
+## with mimirtool (load-job.yaml). Same raw-manifest shape as sample-app and
+## alert-sink, no Kustomize (see the ADR-004 addendum for why).
+##
+## recurse: false on purpose: the tests/ subdir holds a promtool test file, which
+## is not a Kubernetes manifest and must not be applied. Non-recursive picks up
+## only the two top-level manifests.
+##
+## sync-wave 3: after Mimir (wave 1) is Healthy, so the ruler API exists before the
+## load Job runs. See docs/adr/017.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mimir-rules
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  source:
+    repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+    targetRevision: main
+    path: k8s/manifests/mimir/rules
+    directory:
+      recurse: false
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

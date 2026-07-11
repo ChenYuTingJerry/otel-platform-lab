@@ -1,0 +1,47 @@
+## alert-sink Deployment (Step 5c).
+##
+## A tiny off-the-shelf webhook receiver. mendhak/http-https-echo logs every
+## request it gets, body included, as one JSON line, so a fired alert is visible
+## with `kubectl -n observability logs deploy/alert-sink`. The Mimir Alertmanager
+## routes all alerts here (see the fallbackConfig in k8s/manifests/mimir/values.yaml).
+## Lab-only: it just logs, it does not forward anywhere. See docs/adr/017.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-sink
+  namespace: observability
+  labels:
+    app: alert-sink
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alert-sink
+  template:
+    metadata:
+      labels:
+        app: alert-sink
+    spec:
+      containers:
+        - name: alert-sink
+          image: mendhak/http-https-echo:34
+          env:
+            - name: HTTP_PORT
+              value: "8080"
+            ## Do not log the readiness probe hits, only real webhook posts.
+            - name: LOG_IGNORE_PATH
+              value: /healthz
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi

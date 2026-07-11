@@ -588,3 +588,91 @@ Acceptance criteria:
 - [x] Span metrics derived from traces (Collector `span_metrics`) land in Mimir.
 - [x] A direct metrics path works too (SDK OTLP + the custom `dice_rolls_total`).
 - [x] Grafana has a Mimir datasource; metrics stay aggregate (low cardinality).
+
+
+## Step 5 — App RED alerting (Mimir ruler + Alertmanager) + RED dashboard
+
+Alerting on the app RED metrics, plus one dashboard to read them. Rules live in
+the Mimir ruler in Prometheus format, in git, unit-tested with `promtool`, loaded
+with `mimirtool` to tenant `anonymous` (docs/adr/017). Alerts route through the
+bundled Alertmanager to an in-cluster webhook sink that just logs them. The
+dashboard ships as code through Grafana's dashboards sidecar. Metrics are the ones
+Step 4 already produces (`traces_span_metrics_*`), so no app change. Platform
+self-health is deferred to Step 6. Split into four sub-steps.
+
+### Build
+
+```sh
+make step5a       # enable the Mimir ruler + Alertmanager (mimir re-syncs)
+make test-rules   # unit-test the RED rules with promtool, locally, before loading
+make step5b       # rules ConfigMap + a PostSync-hook Job loads them with mimirtool
+make step5c       # webhook sink for fired alerts
+make step5d       # dashboards sidecar + the RED dashboard
+```
+
+`make step5a` flips `ruler.enabled` and `alertmanager.enabled` in the Mimir values
+and adds an `alertmanager.fallbackConfig` routing all alerts to the sink; the
+change rides the existing `mimir` Application, so Argo re-syncs the Helm release
+and adds the `mimir-ruler` and `mimir-alertmanager` StatefulSets. `make step5b`
+discovers the `mimir-rules` Application (plain manifests: a ConfigMap with the
+rules inline, and a PostSync-hook Job that pushes them to the ruler through
+`mimir-gateway` with mimirtool). `make step5c` and `make step5d` are backends like
+the others, sync-wave 3. `make test-rules` extracts the rules from the ConfigMap
+and runs `promtool test rules` in the `prom/prometheus` image, so nothing is
+installed on the host.
+
+### Verify
+
+```sh
+make verify-step5a    # ruler + Alertmanager StatefulSets ready, ruler API answers
+make verify-step5b    # rules registered + a recording-rule series in the ruler
+make verify-step5c    # sink up, ruler alerts API reachable
+make verify-step5d    # RED dashboard imported into Grafana
+```
+
+`verify-step5a` asserts the `mimir` Application Synced/Healthy, both new
+StatefulSets ready, and the ruler read API reachable through the Grafana proxy.
+`verify-step5b` asserts the `mimir-rules` Application, that the ruler lists the
+`app_red_alerts` group and the `AppHighErrorRatio` alert, then drives `/rolldice`
+and reads back the `job:span_requests:rate5m` recording series (its presence
+proves the ruler evaluates). `verify-step5c` asserts the sink Deployment and the
+Alertmanager StatefulSet. `verify-step5d` asserts the dashboard imported at
+`uid app-red`. The same checks by hand:
+
+```sh
+kubectl -n observability get statefulset mimir-ruler mimir-alertmanager   # READY 1/1
+
+# Rules registered in the ruler (through the Grafana proxy):
+curl -s -u admin:otel-lab-admin \
+  http://localhost:3000/api/datasources/proxy/uid/mimir/api/v1/rules | grep -o '"name":"AppHighErrorRatio"'
+
+# Drive traffic, then read back a recording-rule series:
+kubectl -n demo run metric-gen --rm -i --restart=Never --image=curlimages/curl:latest --command -- \
+  sh -c 'for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done'
+curl -s -u admin:otel-lab-admin -G \
+  http://localhost:3000/api/datasources/proxy/uid/mimir/api/v1/query \
+  --data-urlencode 'query=job:span_requests:rate5m{job="sample-api"}'
+
+# Dashboard imported:
+curl -s -u admin:otel-lab-admin http://localhost:3000/api/dashboards/uid/app-red | grep -o '"uid":"app-red"'
+```
+
+Firing a real alert end to end is a manual check, not part of `make verify`:
+`AppHighErrorRatio` needs a sustained error ratio above 5% for 5m, which is slow
+and flaky to force. To watch delivery, drive error traffic and tail the sink:
+
+```sh
+kubectl -n observability logs -f deploy/alert-sink   # the webhook POST prints as JSON
+```
+
+Note on verification: so far checked locally only. `make test-rules` passes (the
+three alerting rules behave as expected: error ratio 10%, p95 975ms, no-requests
+fires). The in-cluster path (`make step5a`..`5d` + `make verify`) still needs a run
+on k3d through Argo, same as every other step, before this is marked done.
+
+Acceptance criteria:
+
+- [ ] Ruler + Alertmanager enabled and Healthy via the existing `mimir` Application.
+- [ ] RED rules loaded into the ruler under tenant `anonymous`, unit-tested with `promtool`.
+- [ ] Alerts route through Alertmanager to the in-cluster webhook sink.
+- [ ] The RED dashboard loads into Grafana as code (dashboards sidecar).

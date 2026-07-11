@@ -405,6 +405,110 @@ verify_injection() {
     "opentelemetry-auto-instrumentation" "$initc"
 }
 
+verify_step5a() {
+  echo "Step 5a - the Mimir ruler and Alertmanager are up:"
+
+  local appstate
+  appstate=$($KUBECTL -n argocd get application mimir \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "mimir Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  local ruler_ready am_ready
+  ruler_ready=$($KUBECTL -n observability get statefulset mimir-ruler \
+    -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  assert_ge "mimir-ruler StatefulSet ready" 1 "$ruler_ready"
+  am_ready=$($KUBECTL -n observability get statefulset mimir-alertmanager \
+    -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  assert_ge "mimir-alertmanager StatefulSet ready" 1 "$am_ready"
+
+  # The ruler read API through the gateway (via the Grafana proxy). An empty rule
+  # set is fine here; Step 5b loads the rules. This just proves the ruler answers.
+  local rules_resp
+  rules_resp=$(curl -s -u "admin:${GRAFANA_PW}" \
+    "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/rules" 2>/dev/null)
+  assert_contains "Mimir ruler API reachable" '"status":"success"' "$rules_resp"
+}
+
+verify_step5b() {
+  echo "Step 5b - the RED rules load and the ruler evaluates them:"
+
+  local appstate
+  appstate=$($KUBECTL -n argocd get application mimir-rules \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "mimir-rules Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # The ruler lists our rule group and one of the alerts.
+  local rules_resp
+  rules_resp=$(curl -s -u "admin:${GRAFANA_PW}" \
+    "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/rules" 2>/dev/null)
+  assert_contains "ruler has the app_red_alerts group" '"name":"app_red_alerts"' "$rules_resp"
+  assert_contains "ruler has the AppHighErrorRatio alert" '"name":"AppHighErrorRatio"' "$rules_resp"
+
+  # Drive traffic so the app emits spans (-> span metrics the rules read), then
+  # read back a recording-rule series. Its presence proves the ruler evaluates.
+  if $KUBECTL -n demo run metric-gen --rm -i --restart=Never \
+    --image=curlimages/curl:latest --command -- \
+    sh -c 'for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done' \
+    >/dev/null 2>&1; then
+    pass "drove traffic to sample-api /rolldice"
+  else
+    fail "drove traffic to sample-api /rolldice"
+  fi
+
+  # The ruler evaluates on an interval, so retry generously.
+  local rec_resp="empty"
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    rec_resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
+      "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/query" \
+      --data-urlencode 'query=job:span_requests:rate5m{job="sample-api"}' 2>/dev/null)
+    case "$rec_resp" in *'"metric"'*) break ;; *) rec_resp="empty" ;; esac
+    sleep 5
+  done
+  assert_contains "ruler wrote the recording rule series (job:span_requests:rate5m)" \
+    '"metric"' "$rec_resp"
+}
+
+verify_step5c() {
+  echo "Step 5c - the webhook sink is up and the alert path is reachable:"
+
+  local appstate avail
+  appstate=$($KUBECTL -n argocd get application alert-sink \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "alert-sink Application Synced/Healthy" "Synced/Healthy" "$appstate"
+  avail=$($KUBECTL -n observability get deployment alert-sink \
+    -o jsonpath='{.status.availableReplicas}' 2>/dev/null)
+  assert_ge "alert-sink Deployment available" 1 "$avail"
+
+  local am_ready alerts_resp
+  am_ready=$($KUBECTL -n observability get statefulset mimir-alertmanager \
+    -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  assert_ge "mimir-alertmanager StatefulSet ready" 1 "$am_ready"
+  # The ruler alerts API answers (the ruler -> Alertmanager path is wired). A real
+  # alert takes 5m of sustained errors to fire, so that is a manual check, not here.
+  alerts_resp=$(curl -s -u "admin:${GRAFANA_PW}" \
+    "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/alerts" 2>/dev/null)
+  assert_contains "ruler alerts API reachable" '"status":"success"' "$alerts_resp"
+}
+
+verify_step5d() {
+  echo "Step 5d - the RED dashboard loaded into Grafana:"
+
+  local appstate
+  appstate=$($KUBECTL -n argocd get application grafana-dashboards \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "grafana-dashboards Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # The sidecar imports the dashboard asynchronously, so retry until it appears.
+  local dash_resp="empty"
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    dash_resp=$(curl -s -u "admin:${GRAFANA_PW}" \
+      "${GRAFANA_URL}/api/dashboards/uid/app-red" 2>/dev/null)
+    case "$dash_resp" in *'"uid":"app-red"'*) break ;; *) dash_resp="empty" ;; esac
+    sleep 5
+  done
+  assert_contains "RED dashboard imported (uid app-red)" '"uid":"app-red"' "$dash_resp"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
@@ -416,12 +520,17 @@ case "${1:-all}" in
   step3)  verify_step3 ;;
   step4a) verify_step4a ;;
   step4b) verify_step4b ;;
+  step5a) verify_step5a ;;
+  step5b) verify_step5b ;;
+  step5c) verify_step5c ;;
+  step5d) verify_step5d ;;
   injection) verify_injection ;;
   all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; \
           verify_step2c; echo; verify_step2d; echo; verify_step2e; echo; verify_step3; echo; \
           verify_step4a; echo; verify_step4b; echo; \
+          verify_step5a; echo; verify_step5b; echo; verify_step5c; echo; verify_step5d; echo; \
           verify_injection ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|injection|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|step5a|step5b|step5c|step5d|injection|all]" >&2; exit 2 ;;
 esac
 
 echo

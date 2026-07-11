@@ -1,0 +1,82 @@
+## RED dashboard for the sample app (Step 5d), shipped as code.
+##
+## A ConfigMap labelled grafana_dashboard, picked up by Grafana's dashboards
+## sidecar (enabled in k8s/manifests/grafana/values.yaml) and loaded at runtime,
+## the same pattern the datasources use (ADR-007). The panels read the recording
+## rules the Mimir ruler writes (Step 5b), so the dashboard shows the same numbers
+## the alerts evaluate. Datasource is the Mimir datasource, uid `mimir`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-red-dashboard
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+data:
+  red-dashboard.json: |
+    {
+      "uid": "app-red",
+      "title": "App RED (sample-api)",
+      "tags": ["otel-lab", "red"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "time": { "from": "now-1h", "to": "now" },
+      "refresh": "30s",
+      "annotations": { "list": [] },
+      "templating": { "list": [] },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Request rate (req/s)",
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "sum by (job) (rate(traces_span_metrics_calls_total[$__rate_interval]))",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Error ratio",
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "fieldConfig": {
+            "defaults": { "unit": "percentunit", "min": 0, "max": 1 },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "job:span_request_error_ratio:rate5m",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "p95 latency (ms)",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "mimir" },
+              "expr": "job:span_latency_ms:p95_5m",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        }
+      ]
+    }

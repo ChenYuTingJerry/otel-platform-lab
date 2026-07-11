@@ -39,12 +39,35 @@ store_gateway:
 compactor:
   replicas: 1
 
-## Not used by the lab. We never write recording rules or route alerts from
-## Mimir; Grafana only reads metrics back.
+## Step 5: metrics alerting. The ruler evaluates our Prometheus rules (loaded by
+## mimirtool, see k8s/manifests/mimir/rules/), and the bundled Alertmanager routes
+## the alerts that fire. Storage for both is auto-wired to the bundled MinIO
+## (the mimir-ruler bucket) because minio.enabled is true, so no *_storage config
+## is needed here. See docs/adr/017.
 ruler:
-  enabled: false
+  enabled: true
+  replicas: 1
+
 alertmanager:
-  enabled: false
+  enabled: true
+  replicas: 1
+
+  ## Routing config for tenant `anonymous`. Mimir uses this fallback whenever a
+  ## tenant has no Alertmanager config of its own, which is our case: we never
+  ## call `mimirtool alertmanager load`. Every alert goes to the in-cluster
+  ## webhook sink deployed in Step 5c (alert-sink). Standard Prometheus
+  ## Alertmanager schema.
+  fallbackConfig: |
+    route:
+      receiver: webhook
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 5m
+    receivers:
+      - name: webhook
+        webhook_configs:
+          - url: http://alert-sink.observability.svc.cluster.local:8080/
+            send_resolved: true
 
 ## Memcached tiers. Pure query and chunk caching. At the lab's data volume they
 ## are dead weight, so drop four pods.

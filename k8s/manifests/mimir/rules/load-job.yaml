@@ -1,0 +1,49 @@
+# Loads the RED rules into the Mimir ruler for tenant `anonymous`.
+#
+# Mimir keeps rules in object storage per tenant and loads them through the ruler
+# API, so this is not a plain kubectl apply. The Job is an Argo PostSync hook: it
+# runs after the ConfigMap syncs, on every sync. mimirtool rules load is an upsert,
+# so re-running is idempotent. See docs/adr/017 for why this seam exists.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mimir-rules-load
+  namespace: observability
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        app: mimir-rules-load
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Wait until the ruler API answers through the gateway before loading.
+        - name: wait-for-ruler
+          image: curlimages/curl:latest
+          command: ["sh", "-c"]
+          args:
+            - |
+              until curl -sf http://mimir-gateway.observability.svc.cluster.local/prometheus/api/v1/rules >/dev/null; do
+                echo "waiting for the Mimir ruler..."
+                sleep 3
+              done
+      containers:
+        - name: mimirtool
+          image: grafana/mimirtool:3.1.2
+          args:
+            - rules
+            - load
+            - --address=http://mimir-gateway.observability.svc.cluster.local
+            - --id=anonymous
+            - /rules/red-alerts.yaml
+          volumeMounts:
+            - name: rules
+              mountPath: /rules
+      volumes:
+        - name: rules
+          configMap:
+            name: mimir-red-rules

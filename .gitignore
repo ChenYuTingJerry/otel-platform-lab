@@ -17,3 +17,6 @@ kubeconfig.local
 .venv/
 __pycache__/
 *.pyc
+
+# Transient promtool input rendered from the rules ConfigMap by `make test-rules`
+k8s/manifests/mimir/rules/tests/red-alerts.rendered.yaml

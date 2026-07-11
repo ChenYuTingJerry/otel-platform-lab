@@ -1,0 +1,36 @@
+## Argo Application: Grafana dashboards shipped as code (Step 5d).
+##
+## Raw ConfigMaps under k8s/manifests/grafana/dashboards, each labelled
+## grafana_dashboard so Grafana's sidecar loads them. Kept as its own Application,
+## separate from the multi-source `grafana` Application: the sidecar picks up any
+## labelled ConfigMap in the namespace regardless of owner, so dashboards can
+## evolve on their own without touching the Grafana install. See docs/adr/017.
+##
+## sync-wave 3: after the backends and Grafana are up.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana-dashboards
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  source:
+    repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+    targetRevision: main
+    path: k8s/manifests/grafana/dashboards
+    directory:
+      recurse: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,71 @@
+# App RED rules (Rate, Errors, Duration) for the Mimir ruler, as code.
+#
+# The rules live inline in this ConfigMap, the same way the datasource and
+# dashboard ConfigMaps embed their config (ADR-007). This is the single source of
+# truth: the load Job (load-job.yaml) mounts this ConfigMap and pushes the rules to
+# the ruler with mimirtool, and `make test-rules` extracts this same data key and
+# unit-tests it with promtool. No Kustomize, no second copy. See docs/adr/017 and
+# the ADR-004 addendum for why we keep this in plain Helm + raw manifests.
+#
+# Metrics come from the Collector span_metrics connector (docs/adr/015), translated
+# by Mimir with otel_metric_suffixes_enabled (docs/adr/014). The RED "errors"
+# signal uses the span status label status_code="STATUS_CODE_ERROR", which the
+# connector always sets and which is HTTP-agnostic. For HTTP-5xx-only semantics,
+# swap the errors expression for:
+#   sum by (job) (rate(traces_span_metrics_calls_total{http_status_code=~"5.."}[5m]))
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-red-rules
+  namespace: observability
+data:
+  red-alerts.yaml: |
+    groups:
+      - name: app_red_recording
+        interval: 30s
+        rules:
+          - record: job:span_requests:rate5m
+            expr: sum by (job) (rate(traces_span_metrics_calls_total[5m]))
+
+          - record: job:span_request_errors:rate5m
+            expr: sum by (job) (rate(traces_span_metrics_calls_total{status_code="STATUS_CODE_ERROR"}[5m]))
+
+          # clamp_min guards the divide when a job has no traffic yet (rate 0).
+          - record: job:span_request_error_ratio:rate5m
+            expr: |
+              job:span_request_errors:rate5m
+                / clamp_min(job:span_requests:rate5m, 1e-9)
+
+          - record: job:span_latency_ms:p95_5m
+            expr: |
+              histogram_quantile(0.95,
+                sum by (job, le) (rate(traces_span_metrics_duration_milliseconds_bucket[5m])))
+
+      - name: app_red_alerts
+        rules:
+          - alert: AppHighErrorRatio
+            expr: job:span_request_error_ratio:rate5m > 0.05
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High error ratio for {{ $labels.job }}"
+              description: "{{ $labels.job }} error ratio is {{ $value | humanizePercentage }} over 5m (threshold 5%)."
+
+          - alert: AppHighLatencyP95
+            expr: job:span_latency_ms:p95_5m > 500
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High p95 latency for {{ $labels.job }}"
+              description: "{{ $labels.job }} p95 latency is {{ $value | printf \"%.0f\" }}ms over 5m (threshold 500ms)."
+
+          - alert: AppNoRequests
+            expr: absent(traces_span_metrics_calls_total{job="sample-api"})
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "No requests observed for sample-api"
+              description: "No span-derived request metrics for sample-api in 10m; the app or its metrics pipeline may be down."

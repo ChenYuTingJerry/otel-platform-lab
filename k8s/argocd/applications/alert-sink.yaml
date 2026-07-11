@@ -1,0 +1,34 @@
+## Argo Application: the webhook sink that receives fired alerts (Step 5c).
+##
+## Raw manifests (Deployment + Service) under k8s/manifests/alert-sink, applied
+## with directory.recurse like the sample-app. Mimir's Alertmanager routes alerts
+## here; the pod just logs them. See docs/adr/017.
+##
+## sync-wave 3: alongside the rules, after Mimir (wave 1) is up.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: alert-sink
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  source:
+    repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+    targetRevision: main
+    path: k8s/manifests/alert-sink
+    directory:
+      recurse: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

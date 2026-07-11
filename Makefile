@@ -27,6 +27,10 @@ help:
 	@echo "  make step3             - Step 3: Loki logs backend (OTLP via the Collector)"
 	@echo "  make step4a            - Step 4a: Mimir metrics backend + Grafana datasource"
 	@echo "  make step4b            - Step 4b: Collector metrics pipeline + app counter"
+	@echo "  make step5a            - Step 5a: enable the Mimir ruler + Alertmanager"
+	@echo "  make step5b            - Step 5b: RED rules + load them into the ruler"
+	@echo "  make step5c            - Step 5c: webhook sink for fired alerts"
+	@echo "  make step5d            - Step 5d: dashboards sidecar + RED dashboard"
 	@echo
 	@echo "Tests (assert state, exit non-zero on failure):"
 	@echo "  make verify            - run every implemented step's checks"
@@ -39,6 +43,11 @@ help:
 	@echo "  make verify-step3      - assert Loki synced + a log line with trace_id"
 	@echo "  make verify-step4a     - assert Mimir synced + datasource present"
 	@echo "  make verify-step4b     - assert a span metric + the app counter in Mimir"
+	@echo "  make verify-step5a     - assert the ruler + Alertmanager are up"
+	@echo "  make verify-step5b     - assert the RED rules load and the ruler evaluates them"
+	@echo "  make verify-step5c     - assert the webhook sink is up and the AM path is reachable"
+	@echo "  make verify-step5d     - assert the RED dashboard loaded into Grafana"
+	@echo "  make test-rules        - unit-test the RED rules with promtool (local, no cluster)"
 	@echo "  make verify-injection  - assert the webhook injects into a fresh pod"
 	@echo
 	@echo "Underlying targets:"
@@ -241,8 +250,99 @@ step4b: sample-image bootstrap
 	@echo
 	@$(MAKE) status
 
+## Step 5a: enable the Mimir ruler + Alertmanager. Edits the mimir values only, so
+## this rides the existing mimir Application: Argo re-syncs the Helm release and
+## adds the ruler + alertmanager StatefulSets. Applies the root app (idempotent),
+## waits for mimir to go Healthy again, then waits for the two new StatefulSets.
+## Assumes Step 4 is up.
+.PHONY: step5a
+step5a: bootstrap
+	@echo
+	@echo "Waiting for mimir to re-sync with the ruler + Alertmanager enabled..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/mimir --timeout=600s
+	@echo "Waiting for the ruler and alertmanager StatefulSets..."
+	@kubectl -n $(OBS_NS) rollout status statefulset/mimir-ruler --timeout=300s
+	@kubectl -n $(OBS_NS) rollout status statefulset/mimir-alertmanager --timeout=300s
+	@echo
+	@$(MAKE) status
+
+## Step 5b: the RED rules + loading them into the ruler. Applies the root app
+## (idempotent); Argo discovers the mimir-rules Application (a Kustomize dir) and
+## syncs it: a ConfigMap of the rules plus a PostSync-hook Job that pushes them to
+## the ruler with mimirtool. Waits for the Application to go Healthy. Assumes
+## Step 5a is up. Run `make test-rules` first to unit-test the rules locally.
+.PHONY: step5b
+step5b: bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the mimir-rules Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/mimir-rules >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the mimir-rules Application to become Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/mimir-rules --timeout=300s
+	@echo
+	@$(MAKE) status
+
+## Step 5c: the webhook sink for fired alerts. Applies the root app (idempotent);
+## Argo discovers the alert-sink Application and syncs it (Deployment + Service).
+## Waits for it to go Healthy. Assumes Step 5a is up (the Alertmanager routes here).
+.PHONY: step5c
+step5c: bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the alert-sink Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/alert-sink >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the alert-sink Application to become Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/alert-sink --timeout=180s
+	@echo
+	@$(MAKE) status
+
+## Step 5d: the dashboards sidecar + the RED dashboard. Edits grafana values to
+## enable the dashboards sidecar (so Grafana re-syncs) and adds the
+## grafana-dashboards Application (the dashboard ConfigMap). Applies the root app
+## (idempotent); waits for both to go Healthy. Assumes Step 5b is up (the panels
+## read the recording rules).
+.PHONY: step5d
+step5d: bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the grafana-dashboards Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/grafana-dashboards >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for grafana to re-sync (dashboards sidecar) and the dashboards app..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/grafana --timeout=300s
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/grafana-dashboards --timeout=180s
+	@echo
+	@$(MAKE) status
+
+## Unit-test the RED rules with promtool, locally, no cluster needed. The rules
+## live inline in configmap.yaml (the single source), so first extract that data
+## key into a transient rendered file next to the tests (ruby ships with macOS),
+## then run promtool in the prom/prometheus image (nothing to install on the host).
+## Run this before `make step5b` to catch rule mistakes early.
+RULES_DIR := k8s/manifests/mimir/rules
+.PHONY: test-rules
+test-rules:
+	@ruby -ryaml -e 'print YAML.load_file("$(RULES_DIR)/configmap.yaml")["data"]["red-alerts.yaml"]' \
+	  > $(RULES_DIR)/tests/red-alerts.rendered.yaml
+	docker run --rm --entrypoint promtool \
+	  -w /rules/tests \
+	  -v $(PWD)/$(RULES_DIR):/rules \
+	  prom/prometheus:v3.1.0 \
+	  test rules /rules/tests/red-alerts_test.yaml; \
+	  status=$$?; rm -f $(RULES_DIR)/tests/red-alerts.rendered.yaml; exit $$status
+
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-injection
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-step5a verify-step5b verify-step5c verify-step5d verify-injection
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -265,6 +365,14 @@ verify-step4a:
 	@./scripts/verify.sh step4a
 verify-step4b:
 	@./scripts/verify.sh step4b
+verify-step5a:
+	@./scripts/verify.sh step5a
+verify-step5b:
+	@./scripts/verify.sh step5b
+verify-step5c:
+	@./scripts/verify.sh step5c
+verify-step5d:
+	@./scripts/verify.sh step5d
 verify-injection:
 	@./scripts/verify.sh injection
 
