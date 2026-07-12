@@ -83,6 +83,13 @@ the app runs on. That node-pinning is deliberately not built here.
 - Cost of the tier: one more Collector to run and reason about, and an extra hop
   for logs (app to agent to gateway). Accepted because it is opt-in and the point
   is the demonstration.
+- The tier's shape is one value, `mode`, in the agent chart values. We run
+  `mode: daemonset` (node-local: a pod per node, noise dropped before it crosses
+  the network). `mode: deployment` would make it a central proxy instead: it still
+  filters before the gateway, but every log first travels to the proxy, which then
+  bears the full unfiltered ingest. On one node the two are equivalent; the
+  DaemonSet only wins at multi-node scale (drop is distributed and stays off the
+  wire). Switching is a one-line change.
 - The single-node Service simplification is a real gap versus production: it does
   not prove node-pinned routing (invisible on one node). The multi-node pattern is
   recorded above so the gap is explicit.

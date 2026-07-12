@@ -68,6 +68,41 @@ crosses the network. Traces and metrics still go straight to the gateway, and th
 gateway keeps all cluster-singleton work. Off by default; see
 [ADR 019](adr/019-optional-agent-tier-for-node-local-log-filtering.md).
 
+```mermaid
+flowchart LR
+  subgraph demo["namespace: demo"]
+    app["sample-api"]
+  end
+
+  subgraph obs["namespace: observability"]
+    agent["otel-agent (opt-in)<br/>mode: daemonset (per node)<br/>or deployment (central proxy)<br/>filter: drop DEBUG / probe"]
+    gw["OTel Collector gateway<br/>central single egress (ADR-002)<br/>all kept logs converge here"]
+    loki["Loki"]
+    other["Tempo / Mimir"]
+  end
+
+  drop["discarded"]
+
+  app -- "logs (OTLP)" --> agent
+  app -- "traces, metrics (OTLP)" --> gw
+  agent -- "kept logs" --> gw
+  agent -. "DEBUG / probe noise" .-> drop
+  gw -- "logs" --> loki
+  gw -- "traces, metrics" --> other
+```
+
+Only logs take the two-hop path (app to agent to gateway); traces and metrics go
+straight to the gateway. Whichever mode the agent runs in, the kept logs still
+converge on the one gateway (ADR-002, single egress); only the dropped noise is
+handled differently. The agent's shape is one value, `mode`, in its chart values.
+`mode: daemonset` (what we run) puts a pod on every node, so noise is dropped
+locally and never crosses the network. `mode: deployment` would make it a central
+proxy instead: it still filters before the gateway, but every log first travels to
+that proxy, which then bears the full unfiltered ingest. On a single node the two
+are equivalent; the difference shows only at multi-node scale, where the DaemonSet
+spreads the receive-and-drop load across nodes and keeps dropped volume off the
+wire.
+
 ## GitOps delivery (control plane)
 
 ArgoCD is installed once with Helm, then manages every other workload as an
@@ -106,6 +141,7 @@ The app comes up once the operator and Collector are ready.
 | cert-manager | `cert-manager` | Issues the operator webhook cert | `jetstack/cert-manager` (ADR 016) |
 | OTel Operator | `opentelemetry-operator-system` | Injects auto-instrumentation | operator chart (ADR 010) |
 | OTel Collector | `observability` | Single telemetry ingress (gateway) | `opentelemetry-collector` chart (ADR 002, 009) |
+| OTel agent (opt-in) | `observability` | Node-local log filter in front of the gateway (Topology B) | `opentelemetry-collector` chart, `mode: daemonset` (ADR 019) |
 | Tempo | `observability` | Traces backend | `grafana-community/tempo` (ADR 008) |
 | Loki | `observability` | Logs backend | `grafana-community/loki` (ADR 011) |
 | Mimir | `observability` | Metrics backend + ruler + Alertmanager | `grafana/mimir-distributed` (ADR 013, 017) |
