@@ -62,12 +62,17 @@ k8s/manifests/otel-injection/  Operator injection templates (Instrumentation CRs
 config/                     Reserved. The Collector pipeline lives inline in
                             k8s/manifests/collector/values.yaml, not here.
 docs/ARCHITECTURE.md        Overall architecture: diagrams + all ADRs at a glance
+docs/scenarios.md           The same material indexed by problem, not by build order
 docs/adr/                   Architecture decision records
 docs/signal-strategy.md     How logs, metrics, and traces split work
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the runtime and GitOps
 diagrams and a one-line summary of every decision.
+
+See [docs/scenarios.md](docs/scenarios.md) if you arrived with a problem rather
+than a build step. It indexes the same decisions by the shape of the problem they
+solve, with the trade-off and the gotcha for each.
 
 ## Build order
 

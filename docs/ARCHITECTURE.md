@@ -240,5 +240,10 @@ explicit:
   ADR 018 as a known option, not built.
 
 For how a new capability is judged in or out of scope (produces/moves/stores/shows
-telemetry vs consumes it vs unrelated), the working rule is in the project notes;
-the short version is that the Collector's ingest and egress edges are the boundary.
+telemetry vs consumes it vs unrelated), the working rule is written down in
+[scenarios.md, Scenario 9](scenarios.md#9-deciding-what-not-to-build); the short
+version is that the Collector's ingest and egress edges are the boundary.
+
+Each gap above is expanded in [scenarios.md](scenarios.md), which indexes these
+decisions by the problem they solve rather than by build order, and pairs each one
+with its trade-off and the detail that bit us.
