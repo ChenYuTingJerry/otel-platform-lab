@@ -858,3 +858,82 @@ Acceptance criteria:
 - [x] The agent drops DEBUG/probe noise and keeps INFO/errors (verified in Loki).
 - [x] The topology is opt-in: removing the Application + app env reverts to Topology A.
 - [x] Argo-path green live (`make verify-step6b` 7/7, full `make verify` 74/74).
+
+## Step 7 — Autoscale the app on request rate (KEDA Prometheus scaler) (Pending live)
+
+The first capability that acts on telemetry instead of just showing it. KEDA runs
+as its own Argo Application (`keda`, sync-wave -1) and installs the operator, the
+metrics apiserver, the webhooks, and its CRDs. A `ScaledObject` ships with the
+sample app and scales sample-api on a Mimir query
+(`sum(rate(traces_span_metrics_calls_total{service_name="sample-api"}[5m]))`),
+between 1 and 5 replicas. The Deployment no longer sets `replicas`: git owns the
+scaling policy (the ScaledObject), the HPA KEDA creates owns the replica count, so
+Argo `selfHeal` does not fight the autoscaler. No scale-to-zero (that would need
+the HTTP Add-on). See `docs/adr/020`.
+
+### Build
+
+```sh
+make step7        # sync the keda Application + the ScaledObject on the app
+make verify-step7
+```
+
+`make step7` applies the root app. Argo discovers the `keda` Application (wave -1,
+so the CRDs land before the app applies a ScaledObject) and re-syncs `sample-app`
+with the new `scaledobject.yaml`. Assumes Step 4 is up: the scaler reads the span
+metrics Mimir already stores.
+
+### Verify
+
+```sh
+make verify-step7    # KEDA healthy, ScaledObject Ready, HPA created, scales up under load then back to 1
+```
+
+`verify-step7` asserts the `keda` Application Synced/Healthy, the `sample-api`
+ScaledObject is `Ready=True`, and KEDA created the HPA `keda-hpa-sample-api`
+targeting the Deployment. Then it drives background traffic at `/rolldice` and
+polls the Deployment's replica count past its floor of 1, stops the load, and
+waits for it to fall back to 1. Give it time on the way up: the span metric lands
+in Mimir only ~every 2 min, and the rate() window is 5m, so scale-up trails the
+traffic by ~3 to 4 minutes. Scale-down is quick (~45s): once traffic stops the
+rate goes empty, KEDA reads that as 0, and the HPA scales down within its 30s
+stabilization window. The same checks by hand:
+
+```sh
+kubectl -n demo get scaledobject sample-api \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'   # -> True
+kubectl -n demo get hpa keda-hpa-sample-api                        # targets Deployment/sample-api
+kubectl -n demo get deploy sample-api -o jsonpath='{.spec.replicas}'  # 1 at rest
+
+# drive load, then watch it scale (allow ~3-4 min up, ~1 min back down):
+make load                                  # 8 workers for LOAD_SECONDS (default 180; use 420 for a full cycle)
+kubectl -n demo get deploy sample-api -w   # replicas climb above 1, then back to 1 after load stops
+```
+
+Confirm the scaling signal itself in Grafana Explore (`mimir` datasource):
+`sum(rate(traces_span_metrics_calls_total{service_name="sample-api"}[5m]))` rises
+under load. This is the exact query the ScaledObject reads. Note the window: a
+shorter one (`[1m]`, `[2m]`) returns empty here because the metric arrives only
+~every 2 min, so the rate has too few samples to compute.
+
+Note on verification: the scaling mechanism was proven live pre-push, in an
+isolated `keda-verify` namespace so the Argo-managed sample-api was left untouched.
+KEDA was installed with the exact chart + lab values (`kedacore/keda` 2.20.1, three
+pods ready); the real `scaledobject.yaml` passed a server-side dry-run against the
+live CRD; and a throwaway Deployment with a ScaledObject carrying the real Mimir
+query scaled 1 -> 3 under load (HPA read ~800 calls/s, threshold 5, capped at max)
+and back to 1 within ~45s of the load stopping. This run is what caught the window
+bug: with a `[1m]` window the rate was always empty (the metric lands ~every 2 min),
+so it was changed to `[5m]`. What is NOT yet done is the Argo path: `make step7`
+syncing `keda` + the ScaledObject from `main`, and the `replicas`-removal not being
+reverted by `selfHeal` on the managed app. That needs the change on `main`; this
+section flips to Done once `make step7` + `make verify-step7` are green and full
+`make verify` still passes.
+
+Acceptance criteria:
+
+- [x] KEDA installs and reconciles a ScaledObject to Ready; the HPA it creates scales a Deployment up under load and back down (proven live, isolated namespace).
+- [x] The real `scaledobject.yaml` validates against the live CRD (server dry-run).
+- [ ] Argo path: `make step7` syncs `keda` (wave -1) + the ScaledObject on the app.
+- [ ] `deployment.yaml` no longer pins `replicas`; Argo `selfHeal` does not revert a scale.
+- [ ] Argo-path green live (`make verify-step7`, full `make verify`).

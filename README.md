@@ -5,10 +5,11 @@ single telemetry ingress feeding an LGTM stack (Loki, Grafana, Tempo, Mimir).
 Deployed on a local k3d cluster (Apple Silicon), managed by ArgoCD from
 day one.
 
-Current stage: Step 3 done. Traces (Step 2) and logs (Step 3) both flow through
-the Collector to their backends: a FastAPI sample app, auto-instrumented by the
-operator, sends OTLP to the Collector, which routes traces to Tempo and logs to
-Loki. Grafana links logs and traces both ways. Mimir (metrics) lands in Step 4.
+Current stage: Step 7 done. All three signals flow through the Collector to their
+backends (traces to Tempo, logs to Loki, metrics to Mimir), a FastAPI sample app
+is auto-instrumented by the operator, RED and platform-health alerts run in the
+Mimir ruler, and KEDA now scales the app on its request rate. The platform both
+observes the app and, as of Step 7, acts on what it observes.
 
 ## Prerequisites
 
@@ -20,8 +21,9 @@ Loki. Grafana links logs and traces both ways. Mimir (metrics) lands in Step 4.
 
 ## Quickstart
 
-The build has one scaffold step (Step 0) plus four signal steps (1-4). Run them
-in order; each is verified before the next. See
+The build has one scaffold step (Step 0), the signal pipeline (Steps 1-4), then
+platform behaviour on top (alerting, self-health, autoscaling). Run them in
+order; each is verified before the next. See
 [docs/VERIFICATION.md](docs/VERIFICATION.md) for the per-step checks.
 
 ```
@@ -33,6 +35,13 @@ make step2d   # sample app + auto-instrumentation, one trace end to end
 make step3    # Loki logs backend, logs via the Collector, trace correlation
 make step4a   # Mimir metrics backend + its Grafana datasource
 make step4b   # Collector metrics pipeline + the app counter, metrics end to end
+make step5a   # enable the Mimir ruler + Alertmanager
+make step5b   # RED rules loaded into the ruler
+make step5c   # webhook sink for fired alerts
+make step5d   # dashboards sidecar + the RED dashboard
+make step6a   # platform self-health (k8s_cluster metrics + alerts + dashboard)
+make step6b   # opt-in node-local log-filtering agent (DaemonSet)
+make step7    # KEDA autoscaler: scale the app on request rate
 ```
 
 - `make step0` runs `make cluster` (k3d cluster `otel-lab`, host ports 3000 for
@@ -86,6 +95,7 @@ Each step is verified end-to-end before the next one starts.
 5. [x] Step 5 - App RED alerting (Mimir ruler + Alertmanager) + RED dashboard
 6. [x] Step 6a - Platform self-health (k8s_cluster workload alerts + dashboard)
 7. [x] Step 6b - Opt-in node-local log-filtering agent (DaemonSet, Topology B)
+8. [x] Step 7 - Autoscale the app on request rate (KEDA Prometheus scaler)
 
 ## Design constraints (deliberate)
 

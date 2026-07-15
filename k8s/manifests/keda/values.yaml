@@ -1,0 +1,31 @@
+## KEDA Helm values, read by Argo through the keda Application (Step 7).
+##
+## KEDA runs three pods: the operator (watches ScaledObjects, manages the HPA),
+## the metrics apiserver (serves the external metric to the HPA), and the
+## admission webhooks. Chart defaults are fine; we only trim the generous
+## default limits (1 CPU / 1000Mi each) so three more pods sit comfortably on a
+## laptop k3d node. Requests stay at the chart default (100m / 100Mi).
+##
+## CRDs (ScaledObject, ScaledJob, TriggerAuthentication, ...) are templated by
+## the chart under templates/crds and install by default (crds.install: true),
+## so a normal Argo sync applies them. No separate CRD step needed.
+
+resources:
+  operator:
+    requests:
+      cpu: 100m
+      memory: 100Mi
+    limits:
+      memory: 256Mi
+  metricServer:
+    requests:
+      cpu: 100m
+      memory: 100Mi
+    limits:
+      memory: 256Mi
+  webhooks:
+    requests:
+      cpu: 50m
+      memory: 100Mi
+    limits:
+      memory: 256Mi

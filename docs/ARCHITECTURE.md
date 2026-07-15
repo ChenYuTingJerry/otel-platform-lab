@@ -129,9 +129,11 @@ flowchart TD
   op -- "injects Instrumentation<br/>init-container" --> app["sample-api pod"]
 ```
 
-Rough sync order (Argo sync-waves): cert-manager (-2), operator (0), backends
-Tempo/Loki/Mimir (1), Collector (2), then rules, dashboards, and the sink (3).
-The app comes up once the operator and Collector are ready.
+Rough sync order (Argo sync-waves): KEDA (-1), cert-manager (-2), operator (0),
+backends Tempo/Loki/Mimir (1), Collector (2), then rules, dashboards, and the
+sink (3). The app comes up last (wave 4), once the operator and Collector are
+ready; KEDA is in early so its `ScaledObject` CRD exists before the app applies
+one.
 
 ## Components
 
@@ -147,7 +149,8 @@ The app comes up once the operator and Collector are ready.
 | Mimir | `observability` | Metrics backend + ruler + Alertmanager | `grafana/mimir-distributed` (ADR 013, 017) |
 | Grafana | `observability` | Query and visualisation | `grafana/grafana` (ADR 006, 007) |
 | alert-sink | `observability` | Webhook that logs fired alerts | raw manifests (ADR 017) |
-| sample-api | `demo` | The app under observation | local image, FastAPI |
+| KEDA | `keda` | Autoscaler: scales the app on its request rate | `kedacore/keda` (ADR 020) |
+| sample-api | `demo` | The app under observation (and now, scaled by KEDA) | local image, FastAPI |
 
 ## Signal pipelines, one line each
 
@@ -164,6 +167,9 @@ The app comes up once the operator and Collector are ready.
   sets: app RED (`red-alerts`) and platform health (`platform-health`).
 - **Platform health**: `k8s_cluster` watches the API server and alerts when any
   important service is down or crash-looping (ADR 018).
+- **Autoscaling**: KEDA reads the app's request rate from Mimir and scales
+  sample-api between 1 and 5 replicas (ADR 020). It consumes the same span metric
+  Alerting reads; the two are parallel consumers, there is no alert-to-KEDA wire.
 
 ## All decisions at a glance (ADR index)
 
@@ -218,6 +224,12 @@ decision and the reason in one line.
 |-----|----------|-----|
 | [017](adr/017-metrics-alerting-via-mimir-ruler.md) | Metrics alerting runs in the Mimir ruler, rules in git, `promtool`-tested | Rules are versioned and testable; Grafana-managed alerting kept in reserve |
 | [018](adr/018-platform-health-via-k8s-cluster-receiver.md) | Platform self-health via the `k8s_cluster` receiver | OTLP-native, no scrape path, stays on the single gateway (no DaemonSet) |
+
+### Autoscaling
+
+| ADR | Decision | Why |
+|-----|----------|-----|
+| [020](adr/020-autoscaling-via-keda-prometheus-scaler.md) | Scale the app with KEDA's Prometheus scaler, not the HTTP Add-on | Reuses existing span metrics, no proxy in the data path; git owns the policy, the HPA owns the replica count |
 
 ## Deliberate boundaries
 

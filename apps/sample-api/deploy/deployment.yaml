@@ -14,7 +14,10 @@ metadata:
   labels:
     app: sample-api
 spec:
-  replicas: 1
+  ## No `replicas` here on purpose (Step 7). KEDA's HPA owns the replica count;
+  ## a field can have only one owner. With it absent from git, Argo has nothing
+  ## to diff on /spec/replicas, so selfHeal does not fight the autoscaler. See
+  ## docs/adr/020.
   selector:
     matchLabels:
       app: sample-api

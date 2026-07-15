@@ -649,6 +649,73 @@ verify_step6b() {
     'dice.debug' "$debug_resp"
 }
 
+verify_step7() {
+  echo "Step 7 - KEDA autoscaler (scale sample-api on request rate):"
+
+  # KEDA is its own Argo Application (sync-wave -1), installs the operator, the
+  # metrics apiserver, the admission webhooks and the CRDs.
+  local appstate
+  appstate=$($KUBECTL -n argocd get application keda \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "keda Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # The ScaledObject shipped with the sample app and KEDA reconciled it to Ready.
+  # Ready=True means the trigger (the Mimir query) validated and the HPA was
+  # created.
+  local so_ready
+  so_ready=$($KUBECTL -n demo get scaledobject sample-api \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  assert_eq "ScaledObject sample-api is Ready" "True" "$so_ready"
+
+  # KEDA created the HPA that actually owns the replica count. Its name is
+  # keda-hpa-<scaledobject>, and it targets the sample-api Deployment. This is
+  # the runtime owner of /spec/replicas (git no longer sets it). See docs/adr/020.
+  local hpa_target
+  hpa_target=$($KUBECTL -n demo get hpa keda-hpa-sample-api \
+    -o jsonpath='{.spec.scaleTargetRef.name}' 2>/dev/null)
+  assert_eq "KEDA's HPA targets the sample-api Deployment" "sample-api" "$hpa_target"
+
+  # Drive sustained load and watch the Deployment scale past its floor of 1. The
+  # signal is laggy: the span metric lands in Mimir only ~every 2 min, so the 5m
+  # rate() window needs a few minutes of traffic before it clears the threshold.
+  # Run traffic in the background (long enough to cover the poll) and peak-track
+  # the replica count.
+  $KUBECTL -n demo delete pod load-gen-7 --ignore-not-found --now >/dev/null 2>&1
+  $KUBECTL -n demo run load-gen-7 --restart=Never \
+    --image=curlimages/curl:latest --command -- sh -c '\
+      end=$(( $(date +%s) + 420 )); \
+      for w in 1 2 3 4 5 6 7 8; do \
+        ( while [ $(date +%s) -lt $end ]; do \
+            curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; \
+          done ) & \
+      done; wait' >/dev/null 2>&1 &&
+    pass "started background load against sample-api /rolldice" ||
+    fail "started background load against sample-api /rolldice"
+
+  # Poll up to ~6 min: rate[5m] needs ~2 samples (so ~3-4 min of load) to exceed
+  # the threshold, then the HPA scales up within a poll cycle.
+  local replicas peak=1
+  for attempt in $(seq 1 45); do
+    replicas=$($KUBECTL -n demo get deploy sample-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
+    if [ "${replicas:-1}" -gt "$peak" ] 2>/dev/null; then peak=$replicas; fi
+    if [ "${replicas:-1}" -gt 1 ] 2>/dev/null; then break; fi
+    sleep 8
+  done
+  assert_ge "sample-api scaled above 1 replica under load" 2 "$peak"
+
+  # Stop the load and confirm it returns to the floor. Scale-down is quick here:
+  # once traffic stops the rate() goes empty (KEDA reads that as 0), and the HPA
+  # scales down within its 30s stabilization window. Give it up to ~3 min.
+  $KUBECTL -n demo delete pod load-gen-7 --ignore-not-found --now >/dev/null 2>&1
+  local back="unknown"
+  for attempt in $(seq 1 24); do
+    back=$($KUBECTL -n demo get deploy sample-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
+    if [ "${back:-2}" -eq 1 ] 2>/dev/null; then break; fi
+    sleep 8
+  done
+  assert_eq "sample-api scaled back to 1 after load stopped" "1" "$back"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
@@ -666,14 +733,15 @@ case "${1:-all}" in
   step5d) verify_step5d ;;
   step6a) verify_step6a ;;
   step6b) verify_step6b ;;
+  step7)  verify_step7 ;;
   injection) verify_injection ;;
   all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; \
           verify_step2c; echo; verify_step2d; echo; verify_step2e; echo; verify_step3; echo; \
           verify_step4a; echo; verify_step4b; echo; \
           verify_step5a; echo; verify_step5b; echo; verify_step5c; echo; verify_step5d; echo; \
-          verify_step6a; echo; verify_step6b; echo; \
+          verify_step6a; echo; verify_step6b; echo; verify_step7; echo; \
           verify_injection ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|step5a|step5b|step5c|step5d|step6a|step6b|injection|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|step5a|step5b|step5c|step5d|step6a|step6b|step7|injection|all]" >&2; exit 2 ;;
 esac
 
 echo

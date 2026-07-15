@@ -483,7 +483,9 @@ yeses.
   dashboards, alert rules. This is the platform.
 - **BOUNDARY.** It **consumes** telemetry in order to act, or it pushes its own
   telemetry in over OTLP. Judge these case by case. An autoscaler that scales on a
-  metric sits exactly here.
+  metric sits exactly here, and Step 7 pulls one across on purpose: KEDA reads the
+  app's request rate from Mimir and scales it (ADR 020). Argo owns the scaling
+  policy, the runtime owns the replica count.
 - **OUT.** It does not touch your telemetry at all. Not your problem.
 
 The Collector's ingest and egress edges are the boundary line. The boundary is not
@@ -513,10 +515,12 @@ missing:
   adapter, which cuts against the OTLP-only model in Scenario 4. "ArgoCD is down" is
   already covered by `k8s_cluster` at the workload level. Only the drift part is
   deferred.
-- **Autoscaling.** A BOUNDARY case: it consumes telemetry to act. Researched, not
-  built. The platform currently *observes* the signals an autoscaler would consume
-  (workload availability, RED metrics), and the Collector's ClusterRole can read
-  HPAs, but nothing here scales anything.
+
+Autoscaling used to sit on this list. Step 7 pulled it across the boundary on
+purpose (KEDA scales the app on its request rate, ADR 020), so it is now a built
+BOUNDARY capability rather than a deferred one. What stays deferred is safe
+scale-to-zero, which would need the KEDA HTTP Add-on and a scrape mechanism the
+lab does not have (that is ADR 020's revisit trigger).
 
 **Takeaway.** A platform is defined as much by its refusals as by its features. An
 undocumented gap is a blind spot. The same gap, written down with the condition that

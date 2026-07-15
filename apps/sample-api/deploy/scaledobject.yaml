@@ -1,0 +1,61 @@
+## KEDA ScaledObject for sample-api (Step 7): scale on request volume.
+##
+## This is the scaling *policy*, and it lives in git so Argo owns it. The scaling
+## *action* (the replica count) is owned by the HPA that KEDA creates from this
+## object, not by git. That is why deployment.yaml no longer sets `replicas`: a
+## field can have only one owner, and here the runtime owns it. See docs/adr/020.
+##
+## Signal source is Mimir, the same span metrics Step 4 produces and Step 5
+## alerts on. KEDA and Alertmanager are parallel consumers of that metric; there
+## is no alert->KEDA wire. We scale on LOAD (request rate), never on error ratio:
+## errors from a bug are not fixed by adding replicas (error -> alert, load ->
+## scale).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sample-api
+  namespace: demo
+spec:
+  scaleTargetRef:
+    name: sample-api
+  ## Floor of 1, no scale-to-zero. Scaling sample-api to zero would need the HTTP
+  ## Add-on to wake safely from zero (its interceptor holds the request during
+  ## cold start); the Prometheus scaler cannot, because a scaled-to-zero app
+  ## produces no span metrics, so the trigger could never re-activate. See the
+  ## revisit trigger in docs/adr/020.
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  ## At minReplicaCount >= 1 the app is always "active", so KEDA hands scaling
+  ## entirely to the HPA it creates. pollingInterval and cooldownPeriod would be
+  ## ignored here (they only apply to the 0<->1 activation path, i.e. scale-to-
+  ## zero), so they are deliberately not set. The HPA's own downscale
+  ## stabilization defaults to 5 min; trim it to 30s below. Note the dominant
+  ## scale-down lag is still the 5m rate() window: after load stops, the rate
+  ## stays high until the window clears (~5 min), so a full scale-up-then-down
+  ## cycle takes several minutes. Demo tuning, not production.
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 30
+  triggers:
+    - type: prometheus
+      metadata:
+        ## Mimir's query front-end, same URL the Grafana datasource uses. Mimir
+        ## accepts anonymous queries here (no X-Scope-OrgID header needed), just
+        ## like the datasource and the ruler.
+        serverAddress: http://mimir-gateway.observability.svc.cluster.local/prometheus
+        ## Total calls/s across the service. The window is 5m, not shorter: the
+        ## span metrics land in Mimir only about every 2 minutes (the connector's
+        ## flush cadence), so a 1m or 2m rate() sees at most one sample and returns
+        ## empty (verified live: rate[1m] and rate[2m] were empty under load,
+        ## rate[3m]+ worked). 5m matches the Step 5 recording rule for the same
+        ## reason. Match on `service_name`, not `job`: Mimir sets
+        ## job="demo/sample-api" (namespace-prefixed), so job="sample-api" never
+        ## matches.
+        query: sum(rate(traces_span_metrics_calls_total{service_name="sample-api"}[5m]))
+        ## Target ~5 calls/s per replica. desired = ceil(query / threshold), so
+        ## ~20 calls/s asks for 4 pods. Tune once real traffic shapes are known.
+        threshold: "5"
+        ## Below 1 call/s, treat the app as idle and stay at minReplicaCount.
+        activationThreshold: "1"

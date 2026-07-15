@@ -1,0 +1,50 @@
+## Argo Application: KEDA (Step 7), the autoscaler.
+##
+## Same multi-source shape as the backends:
+##   source 0 - the kedacore/keda Helm chart
+##   source 1 - this Git repo as `$values`, for values.yaml
+##
+## KEDA's job here is one thing: read a request-rate metric from Mimir and scale
+## sample-api. It creates a standard HPA under the hood and drives it from the
+## external metric. The scaling policy (the ScaledObject) ships with the sample
+## app; this Application only installs KEDA itself and its CRDs. See docs/adr/020.
+##
+## No datasource source (unlike the backends): KEDA is not a telemetry backend,
+## it has nothing for Grafana to query.
+##
+## sync-wave -1: KEDA installs the ScaledObject CRD (keda.sh/v1alpha1). That CRD
+## must exist before the sample-app Application (wave 4) applies the ScaledObject.
+## Wave -1 puts KEDA in before every backend, which is earlier than strictly
+## needed but harmless and keeps the CRD ready well ahead of wave 4.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  sources:
+    - repoURL: https://kedacore.github.io/charts
+      chart: keda
+      targetRevision: 2.20.1
+      helm:
+        releaseName: keda
+        valueFiles:
+          - $values/k8s/manifests/keda/values.yaml
+    - repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

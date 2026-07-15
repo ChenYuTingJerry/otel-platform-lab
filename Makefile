@@ -1,11 +1,15 @@
 ## otel-platform-lab Makefile
 ##
-## Build model: one scaffold step (Step 0) plus four signal steps.
-##   Step 0  scaffold  - k3d cluster + ArgoCD          (make step0)   [done]
-##   Step 1  Grafana   - the UI                         (make step1)   [done]
-##   Step 2  Tempo     - traces                    (make step2b, step2c)  [2b,2c done]
-##   Step 3  Loki      - logs                            (make step3)   [done]
-##   Step 4  Mimir     - metrics                    (make step4a, step4b)  [4a,4b done]
+## Build model: one scaffold step (Step 0), the signal pipeline, then platform
+## behaviour on top.
+##   Step 0  scaffold   - k3d cluster + ArgoCD               (make step0)         [done]
+##   Step 1  Grafana    - the UI                             (make step1)         [done]
+##   Step 2  Tempo      - traces                        (make step2b, step2c)     [done]
+##   Step 3  Loki       - logs                              (make step3)          [done]
+##   Step 4  Mimir      - metrics                      (make step4a, step4b)      [done]
+##   Step 5  Alerting   - RED alerts + Alertmanager   (make step5a..step5d)       [done]
+##   Step 6  Platform   - self-health + log agent       (make step6a, step6b)     [done]
+##   Step 7  Autoscale  - KEDA scales the app on load      (make step7)           [done]
 ## Each step is verified end to end before the next. See docs/VERIFICATION.md.
 
 CLUSTER      ?= otel-lab
@@ -33,6 +37,7 @@ help:
 	@echo "  make step5d            - Step 5d: dashboards sidecar + RED dashboard"
 	@echo "  make step6a            - Step 6a: platform self-health (k8s_cluster + alerts + dashboard)"
 	@echo "  make step6b            - Step 6b: opt-in node-local log-filtering agent (DaemonSet)"
+	@echo "  make step7             - Step 7: KEDA autoscaler (scale sample-api on request rate)"
 	@echo
 	@echo "Tests (assert state, exit non-zero on failure):"
 	@echo "  make verify            - run every implemented step's checks"
@@ -51,10 +56,12 @@ help:
 	@echo "  make verify-step5d     - assert the RED dashboard loaded into Grafana"
 	@echo "  make verify-step6a     - assert k8s_cluster metrics, platform alerts + dashboard"
 	@echo "  make verify-step6b     - assert the agent filters DEBUG logs, keeps INFO"
+	@echo "  make verify-step7      - assert KEDA scales sample-api up under load, back down after"
 	@echo "  make test-rules        - unit-test the RED + platform rules with promtool (local)"
 	@echo "  make verify-injection  - assert the webhook injects into a fresh pod"
 	@echo
 	@echo "Underlying targets:"
+	@echo "  make load              - drive sustained traffic at sample-api (moves the autoscaler)"
 	@echo "  make sample-image      - build the sample app image + import into k3d"
 	@echo "  make cluster           - create k3d cluster $(CLUSTER)"
 	@echo "  make argocd            - helm install ArgoCD into ns $(ARGOCD_NS)"
@@ -378,6 +385,50 @@ step6b: sample-image bootstrap
 	@echo
 	@$(MAKE) status
 
+## Step 7: KEDA autoscaler. Adds the keda Application (sync-wave -1, installs KEDA
+## + its CRDs) and, on the sample app, a ScaledObject that scales sample-api on
+## the Mimir request-rate metric. The Deployment lost its `replicas` field, so
+## the HPA KEDA creates owns the count. Applies the root app (idempotent); Argo
+## discovers the keda Application and re-syncs sample-app (the new ScaledObject).
+## Waits for both Healthy. Assumes Step 4 is up (the scaler reads span metrics
+## from Mimir). See docs/adr/020.
+.PHONY: step7
+step7: bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the keda Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/keda >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the keda and sample-app Applications to be Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/keda --timeout=300s
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/sample-app --timeout=180s
+	@echo
+	@$(MAKE) status
+
+## Drive sustained traffic at sample-api so the autoscaler has something to react
+## to. Runs LOAD_WORKERS busy curl loops for LOAD_SECONDS from one ephemeral pod,
+## hitting the Service directly (the scaler reads span metrics, no proxy in the
+## path). Give it ~2 min: the span-metrics signal lags SDK export (~60s) plus the
+## rate() window. Watch the effect with:
+##   kubectl -n $(DEMO_NS) get deploy sample-api -w
+LOAD_SECONDS ?= 180
+LOAD_WORKERS ?= 5
+.PHONY: load
+load:
+	@echo "Driving ~$(LOAD_WORKERS) workers of traffic at sample-api for $(LOAD_SECONDS)s..."
+	kubectl -n $(DEMO_NS) run load-gen --rm -i --restart=Never \
+	  --image=curlimages/curl:latest --command -- sh -c '\
+	    end=$$(( $$(date +%s) + $(LOAD_SECONDS) )); \
+	    for w in $$(seq 1 $(LOAD_WORKERS)); do \
+	      ( while [ $$(date +%s) -lt $$end ]; do \
+	          curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; \
+	        done ) & \
+	    done; wait; \
+	    echo "load done"'
+
 ## Unit-test the RED rules with promtool, locally, no cluster needed. The rules
 ## live inline in configmap.yaml (the single source), so first extract that data
 ## key into a transient rendered file next to the tests (ruby ships with macOS),
@@ -400,7 +451,7 @@ test-rules:
 	  exit $$status
 
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-step5a verify-step5b verify-step5c verify-step5d verify-step6a verify-step6b verify-injection
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-step5a verify-step5b verify-step5c verify-step5d verify-step6a verify-step6b verify-step7 verify-injection
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -435,6 +486,8 @@ verify-step6a:
 	@./scripts/verify.sh step6a
 verify-step6b:
 	@./scripts/verify.sh step6b
+verify-step7:
+	@./scripts/verify.sh step7
 verify-injection:
 	@./scripts/verify.sh injection
 
