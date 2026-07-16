@@ -76,13 +76,15 @@ Mimir. No HTTP Add-on.
 - The first consumer of platform telemetry that acts on it is now in place, and
   the field-ownership split under GitOps is explicit: policy in git, count at
   runtime. This is the reusable lesson, bigger than "we installed KEDA".
-- **The Prometheus scaler lags.** The span metric lands in Mimir only ~every 2
-  min, and the rate() window is 5m, so scale-up trails a traffic rise by roughly
-  3 to 4 minutes (the window needs a couple of samples above the threshold).
-  Scale-down is quicker: when traffic stops the rate goes empty, KEDA reads that
-  as 0, and the HPA scales down within its 30s stabilization window (seen live at
-  ~45s). Fine for a floor-of-1 service that absorbs bursts; too slow to react to
-  spiky, latency-critical traffic. The `verify_step7` check waits accordingly.
+- **The Prometheus scaler lags both ways.** The span metric lands in Mimir only
+  ~every 2 min, and the rate() window is 5m. Scale-up trails a traffic rise by
+  roughly 3 to 4 minutes (the window needs a couple of samples above the
+  threshold). Scale-down is slower still: after traffic stops the rate stays high
+  until the 5m window clears, so it takes ~5 minutes to fall below the threshold,
+  then the HPA's 30s stabilization, before it returns to 1 (measured live on the
+  Argo path). Fine for a floor-of-1 service that absorbs bursts; too slow to react
+  to spiky, latency-critical traffic. The `verify_step7` check waits accordingly,
+  which makes it the slowest step to verify.
 - **No scale-to-zero, and not by accident.** A scaled-to-zero app produces no
   span metrics, so the trigger would have nothing to read and could never
   re-activate (a chicken-and-egg), and requests during a cold start would be

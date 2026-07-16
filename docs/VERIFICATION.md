@@ -859,7 +859,7 @@ Acceptance criteria:
 - [x] The topology is opt-in: removing the Application + app env reverts to Topology A.
 - [x] Argo-path green live (`make verify-step6b` 7/7, full `make verify` 74/74).
 
-## Step 7 — Autoscale the app on request rate (KEDA Prometheus scaler) (Pending live)
+## Step 7 — Autoscale the app on request rate (KEDA Prometheus scaler) (Done)
 
 The first capability that acts on telemetry instead of just showing it. KEDA runs
 as its own Argo Application (`keda`, sync-wave -1) and installs the operator, the
@@ -893,11 +893,12 @@ make verify-step7    # KEDA healthy, ScaledObject Ready, HPA created, scales up 
 ScaledObject is `Ready=True`, and KEDA created the HPA `keda-hpa-sample-api`
 targeting the Deployment. Then it drives background traffic at `/rolldice` and
 polls the Deployment's replica count past its floor of 1, stops the load, and
-waits for it to fall back to 1. Give it time on the way up: the span metric lands
-in Mimir only ~every 2 min, and the rate() window is 5m, so scale-up trails the
-traffic by ~3 to 4 minutes. Scale-down is quick (~45s): once traffic stops the
-rate goes empty, KEDA reads that as 0, and the HPA scales down within its 30s
-stabilization window. The same checks by hand:
+waits for it to fall back to 1. Give it time both ways: the span metric lands in
+Mimir only ~every 2 min, and the rate() window is 5m. Scale-up trails the traffic
+by ~3 to 4 minutes. Scale-down is slower: after traffic stops the rate stays high
+until the 5m window clears (~5 min), then the HPA scales down after its 30s
+stabilization. So a full up-then-down cycle runs ~10 minutes, which makes step7
+the slowest step to verify. The same checks by hand:
 
 ```sh
 kubectl -n demo get scaledobject sample-api \
@@ -905,7 +906,7 @@ kubectl -n demo get scaledobject sample-api \
 kubectl -n demo get hpa keda-hpa-sample-api                        # targets Deployment/sample-api
 kubectl -n demo get deploy sample-api -o jsonpath='{.spec.replicas}'  # 1 at rest
 
-# drive load, then watch it scale (allow ~3-4 min up, ~1 min back down):
+# drive load, then watch it scale (allow ~3-4 min up, ~5 min back down):
 make load                                  # 8 workers for LOAD_SECONDS (default 180; use 420 for a full cycle)
 kubectl -n demo get deploy sample-api -w   # replicas climb above 1, then back to 1 after load stops
 ```
@@ -916,24 +917,36 @@ under load. This is the exact query the ScaledObject reads. Note the window: a
 shorter one (`[1m]`, `[2m]`) returns empty here because the metric arrives only
 ~every 2 min, so the rate has too few samples to compute.
 
-Note on verification: the scaling mechanism was proven live pre-push, in an
-isolated `keda-verify` namespace so the Argo-managed sample-api was left untouched.
-KEDA was installed with the exact chart + lab values (`kedacore/keda` 2.20.1, three
-pods ready); the real `scaledobject.yaml` passed a server-side dry-run against the
-live CRD; and a throwaway Deployment with a ScaledObject carrying the real Mimir
-query scaled 1 -> 3 under load (HPA read ~800 calls/s, threshold 5, capped at max)
-and back to 1 within ~45s of the load stopping. This run is what caught the window
-bug: with a `[1m]` window the rate was always empty (the metric lands ~every 2 min),
-so it was changed to `[5m]`. What is NOT yet done is the Argo path: `make step7`
-syncing `keda` + the ScaledObject from `main`, and the `replicas`-removal not being
-reverted by `selfHeal` on the managed app. That needs the change on `main`; this
-section flips to Done once `make step7` + `make verify-step7` are green and full
-`make verify` still passes.
+Note on verification: proven in two passes. First pre-push, in an isolated
+`keda-verify` namespace so the Argo-managed sample-api was untouched: KEDA installed
+with the exact chart + lab values (`kedacore/keda` 2.20.1, three pods ready), the
+real `scaledobject.yaml` passed a server-side dry-run against the live CRD, and a
+throwaway Deployment with a ScaledObject carrying the real Mimir query scaled 1 -> 3
+under load. This pass caught the window bug: with a `[1m]` window the rate was
+always empty (the metric lands ~every 2 min), so it was changed to `[5m]`. Then on
+the Argo path after push: `make step7` synced the `keda` Application (wave -1) and
+re-synced `sample-app` with the ScaledObject; under `make load` the managed
+sample-api scaled from 1 up to 5 and `selfHeal` did NOT revert it (the `replicas`
+field is gone from git, so Argo has nothing to diff), and after the load stopped it
+returned to 1 in ~5 minutes (the 5m rate window clearing, then the HPA's 30s
+stabilization). The `verify_step7` timing was tuned against these live runs: the
+scale-down poll was extended to ~6.5 min, and after a full-suite run where the
+scale-up was still building when the poll ended, the load was lengthened to 10 min
+and the scale-up poll to ~7.5 min. The coarse ~2 min metric cadence makes step7
+the slowest step to verify.
 
 Acceptance criteria:
 
-- [x] KEDA installs and reconciles a ScaledObject to Ready; the HPA it creates scales a Deployment up under load and back down (proven live, isolated namespace).
-- [x] The real `scaledobject.yaml` validates against the live CRD (server dry-run).
-- [ ] Argo path: `make step7` syncs `keda` (wave -1) + the ScaledObject on the app.
-- [ ] `deployment.yaml` no longer pins `replicas`; Argo `selfHeal` does not revert a scale.
+- [x] KEDA syncs via Argo (wave -1); its CRDs exist before the app's ScaledObject.
+- [x] The ScaledObject is Ready and KEDA creates the HPA owning the replica count.
+- [x] `deployment.yaml` no longer pins `replicas`; Argo `selfHeal` does not revert a scale (sample-api held at 5 under load).
+- [x] Load pushes sample-api above 1 replica; it returns to 1 after load stops (~5 min).
+- [x] `make verify-step7` green live on the Argo path.
+
+Note: a full `make verify` also surfaces one pre-existing failure unrelated to
+Step 7. The root app-of-apps shows `OutOfSync` because the `mimir-rules`
+Application drifts on `directory.recurse: false` (Argo normalises the default
+`false` away, so git and live differ). That field is load-bearing (it stops Argo
+applying the promtool test file under `tests/`), so it is not simply removed;
+the fix is a separate `mimir-rules`/root concern, not a Step 7 change.
 - [ ] Argo-path green live (`make verify-step7`, full `make verify`).

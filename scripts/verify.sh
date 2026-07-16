@@ -683,7 +683,7 @@ verify_step7() {
   $KUBECTL -n demo delete pod load-gen-7 --ignore-not-found --now >/dev/null 2>&1
   $KUBECTL -n demo run load-gen-7 --restart=Never \
     --image=curlimages/curl:latest --command -- sh -c '\
-      end=$(( $(date +%s) + 420 )); \
+      end=$(( $(date +%s) + 600 )); \
       for w in 1 2 3 4 5 6 7 8; do \
         ( while [ $(date +%s) -lt $end ]; do \
             curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; \
@@ -692,10 +692,11 @@ verify_step7() {
     pass "started background load against sample-api /rolldice" ||
     fail "started background load against sample-api /rolldice"
 
-  # Poll up to ~6 min: rate[5m] needs ~2 samples (so ~3-4 min of load) to exceed
-  # the threshold, then the HPA scales up within a poll cycle.
+  # Poll up to ~7.5 min: rate[5m] needs ~2 samples to exceed the threshold, and
+  # the samples land only ~every 2 min, so give it a wide margin before the HPA
+  # reacts. (This is the slow, coarse-metric reality, not impatience.)
   local replicas peak=1
-  for attempt in $(seq 1 45); do
+  for attempt in $(seq 1 56); do
     replicas=$($KUBECTL -n demo get deploy sample-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
     if [ "${replicas:-1}" -gt "$peak" ] 2>/dev/null; then peak=$replicas; fi
     if [ "${replicas:-1}" -gt 1 ] 2>/dev/null; then break; fi
@@ -703,12 +704,13 @@ verify_step7() {
   done
   assert_ge "sample-api scaled above 1 replica under load" 2 "$peak"
 
-  # Stop the load and confirm it returns to the floor. Scale-down is quick here:
-  # once traffic stops the rate() goes empty (KEDA reads that as 0), and the HPA
-  # scales down within its 30s stabilization window. Give it up to ~3 min.
+  # Stop the load and confirm it returns to the floor. Scale-down is slow with a
+  # 5m window: after traffic stops the rate() stays high until the window clears
+  # (~5 min), then falls below the threshold and the HPA scales down after its 30s
+  # stabilization. So poll up to ~6.5 min. (This is why step7 is the slow verify.)
   $KUBECTL -n demo delete pod load-gen-7 --ignore-not-found --now >/dev/null 2>&1
   local back="unknown"
-  for attempt in $(seq 1 24); do
+  for attempt in $(seq 1 49); do
     back=$($KUBECTL -n demo get deploy sample-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
     if [ "${back:-2}" -eq 1 ] 2>/dev/null; then break; fi
     sleep 8
