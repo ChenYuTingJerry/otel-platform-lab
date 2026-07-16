@@ -5,9 +5,13 @@
 ## with mimirtool (load-job.yaml). Same raw-manifest shape as sample-app and
 ## alert-sink, no Kustomize (see the ADR-004 addendum for why).
 ##
-## recurse: false on purpose: the tests/ subdir holds a promtool test file, which
-## is not a Kubernetes manifest and must not be applied. Non-recursive picks up
-## only the two top-level manifests.
+## The tests/ subdir holds a promtool test file, which is not a Kubernetes
+## manifest and must not be applied. We rely on Argo's default of NOT recursing
+## into subdirs, so only the two top-level manifests are picked up. We do NOT set
+## `directory.recurse: false` explicitly: false is the default, and Argo drops it
+## from the stored Application object, so declaring it here makes the root app-of-
+## apps see a permanent phantom diff (git has the field, live does not) and report
+## OutOfSync. Omitting it keeps the same non-recursive behaviour with no drift.
 ##
 ## sync-wave 3: after Mimir (wave 1) is Healthy, so the ruler API exists before the
 ## load Job runs. See docs/adr/017.
@@ -29,8 +33,6 @@ spec:
     repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
     targetRevision: main
     path: k8s/manifests/mimir/rules
-    directory:
-      recurse: false
   syncPolicy:
     automated:
       prune: true
