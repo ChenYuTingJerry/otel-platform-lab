@@ -456,28 +456,36 @@ verify_step5b() {
 
   # Drive traffic so the app emits spans (-> span metrics the rules read), then
   # read back a recording-rule series. Its presence proves the ruler evaluates.
-  if $KUBECTL -n demo run metric-gen --rm -i --restart=Never \
-    --image=curlimages/curl:latest --command -- \
-    sh -c 'for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; sleep 1; done' \
-    >/dev/null 2>&1; then
+  # Run the load in the BACKGROUND for the whole retry window, not a short burst:
+  # span metrics reach Mimir only ~every 2 min, and rate[5m] needs a couple of
+  # samples, so on a cold cluster a brief burst never accumulates enough. Sustain
+  # the traffic so the counter keeps climbing across export cycles.
+  $KUBECTL -n demo delete pod metric-gen --ignore-not-found --now >/dev/null 2>&1
+  if $KUBECTL -n demo run metric-gen --restart=Never \
+    --image=curlimages/curl:latest --command -- sh -c '\
+      end=$(( $(date +%s) + 360 )); \
+      while [ $(date +%s) -lt $end ]; do \
+        curl -s -o /dev/null http://sample-api.demo.svc.cluster.local/rolldice; \
+      done' >/dev/null 2>&1; then
     pass "drove traffic to sample-api /rolldice"
   else
     fail "drove traffic to sample-api /rolldice"
   fi
 
   # The ruler evaluates on an interval, and the span metric has to reach Mimir
-  # first (the SDK/connector export on ~60s), then rate[5m] needs a couple of
-  # samples, so retry generously. No job filter: Mimir sets job to
-  # "<namespace>/<service.name>" (demo/sample-api), and this is the only job that
-  # produces span metrics, so the bare recording series is enough proof.
+  # first, then rate[5m] needs a couple of samples ~2 min apart, so retry for up
+  # to ~5 min. No job filter: Mimir sets job to "<namespace>/<service.name>"
+  # (demo/sample-api), and this is the only job that produces span metrics, so the
+  # bare recording series is enough proof.
   local rec_resp="empty"
-  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+  for attempt in $(seq 1 60); do
     rec_resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
       "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/query" \
       --data-urlencode 'query=job:span_requests:rate5m' 2>/dev/null)
     case "$rec_resp" in *'"metric"'*) break ;; *) rec_resp="empty" ;; esac
     sleep 5
   done
+  $KUBECTL -n demo delete pod metric-gen --ignore-not-found --now >/dev/null 2>&1
   assert_contains "ruler wrote the recording rule series (job:span_requests:rate5m)" \
     '"metric"' "$rec_resp"
 }
