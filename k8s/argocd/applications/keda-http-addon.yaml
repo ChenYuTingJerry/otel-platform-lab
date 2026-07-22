@@ -1,0 +1,54 @@
+## Argo Application: KEDA HTTP Add-on (Step 8), safe scale-to-zero.
+##
+## Same multi-source shape as the KEDA core Application:
+##   source 0 - the kedacore/keda-add-ons-http Helm chart
+##   source 1 - this Git repo as `$values`, for values.yaml
+##
+## What this adds on top of KEDA core (Step 7): an interceptor proxy in the
+## request path. When the target Deployment is at zero, the interceptor holds
+## the incoming request, tells KEDA to scale 0 -> 1 through its own external
+## scaler, and forwards the request once the pod is Ready. That request-path
+## hold is the one thing the Prometheus scaler cannot do, which is why Step 7
+## kept a floor of 1. See docs/adr/021 (and the revisit trigger in docs/adr/020).
+##
+## The scaling policy (the HTTPScaledObject) ships with the offpeak app, the same
+## way the ScaledObject ships with sample-api. This Application only installs the
+## add-on itself and its CRDs (HTTPScaledObject, ...).
+##
+## sync-wave -1: the add-on installs the HTTPScaledObject CRD (http.keda.sh/
+## v1alpha1). That CRD must exist before the offpeak-app Application (wave 4)
+## applies an HTTPScaledObject. Wave -1 matches KEDA core and keeps the CRD ready
+## well ahead of wave 4. The add-on registers itself as an external scaler with
+## the KEDA core operator, which is already running from Step 7.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda-http-addon
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  sources:
+    - repoURL: https://kedacore.github.io/charts
+      chart: keda-add-ons-http
+      targetRevision: 0.15.0
+      helm:
+        releaseName: keda-http-add-on
+        valueFiles:
+          - $values/k8s/manifests/keda-http-addon/values.yaml
+    - repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

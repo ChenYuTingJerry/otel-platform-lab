@@ -726,6 +726,83 @@ verify_step7() {
   assert_eq "sample-api scaled back to 1 after load stopped" "1" "$back"
 }
 
+verify_step8() {
+  echo "Step 8 - KEDA HTTP Add-on (offpeak-api scales to zero):"
+
+  # The HTTP Add-on is its own Argo Application (sync-wave -1). It installs the
+  # interceptor, the external scaler, and the HTTPScaledObject CRD.
+  local appstate
+  appstate=$($KUBECTL -n argocd get application keda-http-addon \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)
+  assert_eq "keda-http-addon Application Synced/Healthy" "Synced/Healthy" "$appstate"
+
+  # The HTTPScaledObject shipped with the offpeak app and reconciled to Ready.
+  # Ready means the add-on wired the routing and created the scaling objects.
+  local hso_ready
+  hso_ready=$($KUBECTL -n demo get httpscaledobject offpeak-api \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  assert_eq "HTTPScaledObject offpeak-api is Ready" "True" "$hso_ready"
+
+  # Rests at zero. With replicas.min 0 and no traffic, the KEDA operator drives
+  # the Deployment to 0 (the 0<->1 transition is KEDA's, not the HPA's, since an
+  # HPA floor is 1). Poll up to ~3 min for it to settle after scaledownPeriod.
+  local rested="unknown"
+  for attempt in $(seq 1 22); do
+    rested=$($KUBECTL -n demo get deploy offpeak-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
+    if [ "${rested:-1}" -eq 0 ] 2>/dev/null; then break; fi
+    sleep 8
+  done
+  assert_eq "offpeak-api rests at 0 replicas when idle" "0" "$rested"
+
+  # Wake on request, and the request must be served, not dropped. Hit the
+  # interceptor proxy (NOT the Service directly) with the routing Host header.
+  # The interceptor holds the request while KEDA scales 0 -> 1 and the pod goes
+  # Ready, then forwards it. Give the single request a wide timeout to cover pod
+  # schedule + SDK init container + readiness. Capture the HTTP status code.
+  $KUBECTL -n demo delete pod wake-8 --ignore-not-found --now >/dev/null 2>&1
+  local wake_out code
+  wake_out=$($KUBECTL -n demo run wake-8 --restart=Never --rm -i \
+    --image=curlimages/curl:latest --command -- \
+    sh -c "curl -s -o /dev/null -w 'CODE=%{http_code}' --max-time 150 \
+      -H 'Host: offpeak-api' \
+      http://keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local:8080/rolldice" \
+    2>/dev/null)
+  case "$wake_out" in *CODE=*) code=${wake_out#*CODE=}; code=${code%%[!0-9]*} ;; *) code="" ;; esac
+  assert_eq "a request through the interceptor is served (2xx) from a cold start" "200" "$code"
+
+  # The waking request pulled it off zero. Since curl only returns after the pod
+  # served it, the Deployment is at >= 1 now.
+  local woke
+  woke=$($KUBECTL -n demo get deploy offpeak-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
+  assert_ge "offpeak-api woke to at least 1 replica on the request" 1 "$woke"
+
+  # Rests again. After the request, with no more traffic, it returns to 0 once
+  # scaledownPeriod (60s) plus the rate window clears. Poll up to ~3 min.
+  local back0="unknown"
+  for attempt in $(seq 1 22); do
+    back0=$($KUBECTL -n demo get deploy offpeak-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
+    if [ "${back0:-1}" -eq 0 ] 2>/dev/null; then break; fi
+    sleep 8
+  done
+  assert_eq "offpeak-api returns to 0 after the request (scaledownPeriod)" "0" "$back0"
+
+  # The autoscaling layer is self-observed: the interceptor pushes its own request
+  # metrics into the Collector over OTLP, so they land in Mimir like any signal.
+  # The OTLP name interceptor.request.count arrives as interceptor_request_count
+  # (with Mimir's otel_metric_suffixes_enabled, a _total may be appended), so
+  # match the family with a regex. Retry: OTLP export interval defaults to ~60s.
+  local icept_resp="empty"
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    icept_resp=$(curl -s -u "admin:${GRAFANA_PW}" -G \
+      "${GRAFANA_URL}/api/datasources/proxy/uid/mimir/api/v1/query" \
+      --data-urlencode 'query={__name__=~"interceptor_request_count.*"}' 2>/dev/null)
+    case "$icept_resp" in *'"metric"'*) break ;; *) icept_resp="empty" ;; esac
+    sleep 8
+  done
+  assert_contains "Mimir has the interceptor's own request metric (self-observed over OTLP)" \
+    '"metric"' "$icept_resp"
+}
+
 case "${1:-all}" in
   step0)  verify_step0 ;;
   step1)  verify_step1 ;;
@@ -744,14 +821,15 @@ case "${1:-all}" in
   step6a) verify_step6a ;;
   step6b) verify_step6b ;;
   step7)  verify_step7 ;;
+  step8)  verify_step8 ;;
   injection) verify_injection ;;
   all)    verify_step0; echo; verify_step1; echo; verify_step2a; echo; verify_step2b; echo; \
           verify_step2c; echo; verify_step2d; echo; verify_step2e; echo; verify_step3; echo; \
           verify_step4a; echo; verify_step4b; echo; \
           verify_step5a; echo; verify_step5b; echo; verify_step5c; echo; verify_step5d; echo; \
-          verify_step6a; echo; verify_step6b; echo; verify_step7; echo; \
+          verify_step6a; echo; verify_step6b; echo; verify_step7; echo; verify_step8; echo; \
           verify_injection ;;
-  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|step5a|step5b|step5c|step5d|step6a|step6b|step7|injection|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [step0|step1|step2a|step2b|step2c|step2d|step2e|step3|step4a|step4b|step5a|step5b|step5c|step5d|step6a|step6b|step7|step8|injection|all]" >&2; exit 2 ;;
 esac
 
 echo

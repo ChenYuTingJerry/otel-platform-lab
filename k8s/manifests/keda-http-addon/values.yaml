@@ -1,0 +1,34 @@
+## KEDA HTTP Add-on Helm values, read by Argo through the keda-http-addon
+## Application (Step 8).
+##
+## The add-on runs three things: the interceptor proxy (in the request path,
+## holds requests during a cold start), the external scaler (tells KEDA core how
+## many replicas the interceptor's queue depth calls for), and its operator.
+##
+## Two settings matter here; everything else is chart default.
+
+interceptor:
+  ## Self-observe the autoscaling layer over OTLP. This is the loop ADR 020 could
+  ## not close: in this chart the interceptor sets no OTEL env by default, and its
+  ## request metrics are a Prometheus /metrics endpoint only, which this all-OTLP
+  ## lab has no way to scrape. The interceptor binary does honour the standard
+  ## OTEL_* env, so we inject them via extraEnvs and point at the Collector's OTLP
+  ## HTTP receiver (4318, already open, the same port the apps push to). The
+  ## interceptor then pushes interceptor.request.count / .concurrency / .duration
+  ## into the Collector -> Mimir, so the scaling layer becomes observed like the
+  ## rest of the platform. No scrape mechanism added. See docs/adr/021.
+  ##
+  ## Port 4318, not 4317: enabling OTEL_EXPORTER_OTLP_METRICS_ENABLED turns on the
+  ## interceptor's *HTTP* OTLP exporter (it POSTs <endpoint>/v1/metrics). Pointing
+  ## it at the gRPC port 4317 fails with "malformed HTTP response" (the gRPC server
+  ## answers in HTTP/2 framing). This was found live, see docs/adr/021.
+  extraEnvs:
+    OTEL_EXPORTER_OTLP_METRICS_ENABLED: "true"
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc.cluster.local:4318"
+  replicas:
+    ## Chart default is 3. The interceptor is in the data path, so production
+    ## keeps >= 2 for HA (losing the only interceptor drops all traffic to the
+    ## scaled services). On a single-node k3d lab one is enough to demonstrate the
+    ## wake-from-zero path; the HA point is documented in docs/adr/021, not run.
+    min: 1
+    max: 3

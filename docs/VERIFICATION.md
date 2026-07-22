@@ -950,3 +950,89 @@ Application drifts on `directory.recurse: false` (Argo normalises the default
 applying the promtool test file under `tests/`), so it is not simply removed;
 the fix is a separate `mimir-rules`/root concern, not a Step 7 change.
 - [ ] Argo-path green live (`make verify-step7`, full `make verify`).
+
+## Step 8 — Safe scale-to-zero for a second backend (KEDA HTTP Add-on) (Done)
+
+Executes ADR 020's revisit trigger. The KEDA HTTP Add-on runs as its own Argo
+Application (`keda-http-addon`, sync-wave -1) and installs an interceptor proxy,
+an external scaler, and its `HTTPScaledObject` CRD. A new backend, `offpeak-api`
+(the same sample-api image, distinct `OTEL_SERVICE_NAME`), ships an
+`HTTPScaledObject` with `replicas.min: 0`. When it is at zero, a request to the
+interceptor is held, the interceptor tells KEDA to scale 0 -> 1, and the held
+request is forwarded once the pod is Ready, so it is served rather than dropped.
+The interceptor also pushes its own request metrics into the Collector over OTLP
+(`interceptor.extraEnvs`), so the scaling layer is observed without any scrape
+path. sample-api and its Prometheus scaler (Step 7) are untouched. See
+`docs/adr/021`.
+
+### Build
+
+```sh
+make step8        # sync the keda-http-addon Application + the offpeak app
+make verify-step8
+```
+
+`make step8` applies the root app. Argo discovers `keda-http-addon` (wave -1, so
+the CRD lands before the app applies an HTTPScaledObject) and syncs `offpeak-app`
+(wave 4). Assumes Step 7 is up: the HTTP Add-on registers as an external scaler
+with the KEDA core operator already running.
+
+### Verify
+
+```sh
+make verify-step8   # add-on healthy, HTTPScaledObject Ready, rests at 0, wakes on request, back to 0
+```
+
+`verify-step8` asserts the `keda-http-addon` Application Synced/Healthy and the
+`offpeak-api` HTTPScaledObject Ready. It waits for the deployment to rest at zero,
+then fires a single request through the interceptor proxy
+(`keda-add-ons-http-interceptor-proxy.keda.svc:8080`, `Host: offpeak-api`) and
+asserts the request returns 2xx **and** the deployment went 0 -> 1 (the held
+request is the whole point). It then waits past `scaledownPeriod` for it to rest
+at zero again, and confirms an `interceptor_request_count` series is present in
+Mimir (the self-observation loop). The same checks by hand:
+
+```sh
+kubectl -n demo get httpscaledobject offpeak-api \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'   # -> True
+kubectl -n demo get deploy offpeak-api -o jsonpath='{.spec.replicas}'  # 0 at rest
+
+# wake it through the interceptor (not the Service directly), from an in-cluster pod:
+kubectl -n demo run curl --rm -it --image=curlimages/curl --restart=Never -- \
+  curl -s -H 'Host: offpeak-api' \
+  http://keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local:8080/rolldice
+kubectl -n demo get deploy offpeak-api -w   # 0 -> 1 on the request, back to 0 after ~60s idle
+```
+
+Confirm the interceptor's own metrics in Grafana Explore (`mimir` datasource):
+`sum(rate(interceptor_request_count_total{}[5m]))` is non-empty after traffic
+(the OTLP name `interceptor.request.count` arrives with Mimir's `_total` suffix),
+proving the scaling layer reports into the same backend as the apps.
+
+Note on verification: proven pre-push in an isolated way, since the manifests were
+not yet on `main` for Argo to pull. The add-on was `helm install`ed into `keda`
+with the exact chart + lab values (`keda-add-ons-http` 0.15.0), and the real
+offpeak manifests were `kubectl apply`ed into `demo`. The HTTPScaledObject went
+Ready, KEDA created a `ScaledObject` (`external-push` trigger) and the HPA
+`keda-hpa-offpeak-api`, and offpeak-api settled to 0 replicas on its own. A single
+request through the interceptor (`Host: offpeak-api`) returned 200 in ~9s from a
+cold start (the interceptor held it while KEDA scaled 0 -> 1 and the pod, with its
+auto-instrumentation init container, went Ready), and the deployment returned to 0
+about 30s after the request. This pass caught the OTLP port bug: enabling the
+interceptor's metrics turns on its *HTTP* exporter, so pointing it at the gRPC port
+4317 failed with "malformed HTTP response" and no metric landed; changing the
+endpoint to 4318 fixed it, after which `interceptor_request_count_total`,
+`interceptor_request_concurrency`, and `interceptor_request_duration_seconds_*`
+all appeared in Mimir with `route_name="offpeak-api"`. `scripts/verify.sh step8`
+then passed every behavioural check; the one remaining assertion (the
+`keda-http-addon` Argo Application) turns green after `make step8` on the pushed
+Argo path.
+
+Acceptance criteria:
+
+- [ ] The HTTP Add-on syncs via Argo (wave -1); its CRD exists before the app's HTTPScaledObject. (post-push)
+- [x] The `offpeak-api` HTTPScaledObject is Ready; offpeak-api rests at 0 replicas when idle.
+- [x] A request through the interceptor wakes it 0 -> 1 and is served (200), not dropped.
+- [x] It returns to 0 after `scaledownPeriod`.
+- [x] `interceptor_request_count_total` lands in Mimir (the autoscaling layer is self-observed).
+- [ ] `make verify-step8` green live on the Argo path. (6/7 pre-push; the Argo-app check is post-push)

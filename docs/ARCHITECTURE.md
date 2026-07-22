@@ -150,7 +150,9 @@ one.
 | Grafana | `observability` | Query and visualisation | `grafana/grafana` (ADR 006, 007) |
 | alert-sink | `observability` | Webhook that logs fired alerts | raw manifests (ADR 017) |
 | KEDA | `keda` | Autoscaler: scales the app on its request rate | `kedacore/keda` (ADR 020) |
-| sample-api | `demo` | The app under observation (and now, scaled by KEDA) | local image, FastAPI |
+| KEDA HTTP Add-on | `keda` | Interceptor proxy for safe scale-to-zero; self-observed over OTLP | `kedacore/keda-add-ons-http` (ADR 021) |
+| sample-api | `demo` | The app under observation, scaled 1 -> N by KEDA (ADR 020) | local image, FastAPI |
+| offpeak-api | `demo` | Backend that rests at zero and wakes on request (ADR 021) | same local image, FastAPI |
 
 ## Signal pipelines, one line each
 
@@ -167,9 +169,13 @@ one.
   sets: app RED (`red-alerts`) and platform health (`platform-health`).
 - **Platform health**: `k8s_cluster` watches the API server and alerts when any
   important service is down or crash-looping (ADR 018).
-- **Autoscaling**: KEDA reads the app's request rate from Mimir and scales
-  sample-api between 1 and 5 replicas (ADR 020). It consumes the same span metric
-  Alerting reads; the two are parallel consumers, there is no alert-to-KEDA wire.
+- **Autoscaling**: two patterns. KEDA's Prometheus scaler reads the app's request
+  rate from Mimir and scales sample-api between 1 and 5 replicas (ADR 020); it
+  consumes the same span metric Alerting reads, as a parallel consumer (no
+  alert-to-KEDA wire). The KEDA HTTP Add-on scales offpeak-api from 0 to 1 by
+  holding the first request in an interceptor during the cold start (ADR 021).
+  The interceptor pushes its own request metrics into the Collector over OTLP, so
+  the scaling layer is observed too.
 
 ## All decisions at a glance (ADR index)
 
@@ -230,6 +236,7 @@ decision and the reason in one line.
 | ADR | Decision | Why |
 |-----|----------|-----|
 | [020](adr/020-autoscaling-via-keda-prometheus-scaler.md) | Scale the app with KEDA's Prometheus scaler, not the HTTP Add-on | Reuses existing span metrics, no proxy in the data path; git owns the policy, the HPA owns the replica count |
+| [021](adr/021-scale-to-zero-via-keda-http-addon.md) | Safe scale-to-zero for a new offpeak backend via the KEDA HTTP Add-on | Interceptor holds the first request during cold start (the Prometheus scaler cannot); interceptor self-observed over OTLP |
 
 ## Deliberate boundaries
 

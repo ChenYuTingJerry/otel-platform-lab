@@ -1,0 +1,41 @@
+## Argo Application: offpeak app (Step 8), a backend that scales to zero.
+##
+## Its manifests live with the app under apps/offpeak-api/deploy, the same
+## "app as its own small project" layout as sample-app. Argo applies the
+## Deployment, Service, and HTTPScaledObject from there. The image is the same
+## sample-api:0.1.0 that `make sample-image` builds and imports into k3d, so no
+## extra image build is needed.
+##
+## Destination namespace demo, same as sample-api and the injection templates,
+## so the pod annotation resolves the Instrumentation CR in that namespace.
+##
+## sync-wave 4: same wave as sample-app. Needs the operator (wave 0), the
+## Collector (wave 2), the Instrumentation CR (wave 3), and the HTTP Add-on CRD
+## (wave -1) already in place before its HTTPScaledObject applies.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: offpeak-app
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  source:
+    repoURL: https://github.com/ChenYuTingJerry/otel-platform-lab
+    targetRevision: main
+    path: apps/offpeak-api/deploy
+    directory:
+      recurse: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

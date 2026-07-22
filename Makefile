@@ -10,6 +10,7 @@
 ##   Step 5  Alerting   - RED alerts + Alertmanager   (make step5a..step5d)       [done]
 ##   Step 6  Platform   - self-health + log agent       (make step6a, step6b)     [done]
 ##   Step 7  Autoscale  - KEDA scales the app on load      (make step7)           [done]
+##   Step 8  Scale-zero - HTTP Add-on rests a backend at 0 (make step8)           [done]
 ## Each step is verified end to end before the next. See docs/VERIFICATION.md.
 
 CLUSTER      ?= otel-lab
@@ -38,6 +39,7 @@ help:
 	@echo "  make step6a            - Step 6a: platform self-health (k8s_cluster + alerts + dashboard)"
 	@echo "  make step6b            - Step 6b: opt-in node-local log-filtering agent (DaemonSet)"
 	@echo "  make step7             - Step 7: KEDA autoscaler (scale sample-api on request rate)"
+	@echo "  make step8             - Step 8: KEDA HTTP Add-on (offpeak backend scales to zero)"
 	@echo
 	@echo "Tests (assert state, exit non-zero on failure):"
 	@echo "  make verify            - run every implemented step's checks"
@@ -57,6 +59,7 @@ help:
 	@echo "  make verify-step6a     - assert k8s_cluster metrics, platform alerts + dashboard"
 	@echo "  make verify-step6b     - assert the agent filters DEBUG logs, keeps INFO"
 	@echo "  make verify-step7      - assert KEDA scales sample-api up under load, back down after"
+	@echo "  make verify-step8      - assert offpeak-api rests at 0, wakes on request, rests again"
 	@echo "  make test-rules        - unit-test the RED + platform rules with promtool (local)"
 	@echo "  make verify-injection  - assert the webhook injects into a fresh pod"
 	@echo
@@ -408,6 +411,22 @@ step7: bootstrap
 	@echo
 	@$(MAKE) status
 
+.PHONY: step8
+step8: sample-image bootstrap
+	@echo
+	@echo "Waiting for the root app-of-apps to create the keda-http-addon Application..."
+	@for i in $$(seq 1 30); do \
+	  kubectl -n $(ARGOCD_NS) get application/keda-http-addon >/dev/null 2>&1 && break; \
+	  sleep 5; \
+	done
+	@echo "Waiting for the keda-http-addon and offpeak-app Applications to be Healthy..."
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/keda-http-addon --timeout=300s
+	@kubectl -n $(ARGOCD_NS) wait --for=jsonpath='{.status.health.status}'=Healthy \
+	  application/offpeak-app --timeout=180s
+	@echo
+	@$(MAKE) status
+
 ## Drive sustained traffic at sample-api so the autoscaler has something to react
 ## to. Runs LOAD_WORKERS busy curl loops for LOAD_SECONDS from one ephemeral pod,
 ## hitting the Service directly (the scaler reads span metrics, no proxy in the
@@ -451,7 +470,7 @@ test-rules:
 	  exit $$status
 
 ## Tests: assert the expected state of each step. Non-zero exit on failure.
-.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-step5a verify-step5b verify-step5c verify-step5d verify-step6a verify-step6b verify-step7 verify-injection
+.PHONY: verify verify-step0 verify-step1 verify-step2a verify-step2b verify-step2c verify-step2d verify-step2e verify-step3 verify-step4a verify-step4b verify-step5a verify-step5b verify-step5c verify-step5d verify-step6a verify-step6b verify-step7 verify-step8 verify-injection
 verify:
 	@./scripts/verify.sh all
 verify-step0:
@@ -488,6 +507,8 @@ verify-step6b:
 	@./scripts/verify.sh step6b
 verify-step7:
 	@./scripts/verify.sh step7
+verify-step8:
+	@./scripts/verify.sh step8
 verify-injection:
 	@./scripts/verify.sh injection
 

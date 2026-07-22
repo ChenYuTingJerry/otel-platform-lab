@@ -5,11 +5,12 @@ single telemetry ingress feeding an LGTM stack (Loki, Grafana, Tempo, Mimir).
 Deployed on a local k3d cluster (Apple Silicon), managed by ArgoCD from
 day one.
 
-Current stage: Step 7 done. All three signals flow through the Collector to their
+Current stage: Step 8 done. All three signals flow through the Collector to their
 backends (traces to Tempo, logs to Loki, metrics to Mimir), a FastAPI sample app
 is auto-instrumented by the operator, RED and platform-health alerts run in the
-Mimir ruler, and KEDA now scales the app on its request rate. The platform both
-observes the app and, as of Step 7, acts on what it observes.
+Mimir ruler, and KEDA scales the app on its request rate. As of Step 8 a second
+backend rests at zero off-peak and wakes on the first request through the KEDA
+HTTP Add-on. The platform both observes the app and acts on what it observes.
 
 ## Prerequisites
 
@@ -42,6 +43,7 @@ make step5d   # dashboards sidecar + the RED dashboard
 make step6a   # platform self-health (k8s_cluster metrics + alerts + dashboard)
 make step6b   # opt-in node-local log-filtering agent (DaemonSet)
 make step7    # KEDA autoscaler: scale the app on request rate
+make step8    # KEDA HTTP Add-on: a second backend that scales to zero
 ```
 
 - `make step0` runs `make cluster` (k3d cluster `otel-lab`, host ports 3000 for
@@ -67,6 +69,8 @@ k8s/argocd/applications/    One Argo Application CR per platform component
 k8s/manifests/<component>/  Helm values.yaml files that Argo reads
 apps/sample-api/            FastAPI sample service (Step 2d), its own mini-project:
                             app code, Dockerfile, and deploy/ manifests
+apps/offpeak-api/           Scale-to-zero backend (Step 8), reuses sample-api's
+                            image; deploy/ manifests only, incl. the HTTPScaledObject
 k8s/manifests/otel-injection/  Operator injection templates (Instrumentation CRs)
 config/                     Reserved. The Collector pipeline lives inline in
                             k8s/manifests/collector/values.yaml, not here.
@@ -96,6 +100,7 @@ Each step is verified end-to-end before the next one starts.
 6. [x] Step 6a - Platform self-health (k8s_cluster workload alerts + dashboard)
 7. [x] Step 6b - Opt-in node-local log-filtering agent (DaemonSet, Topology B)
 8. [x] Step 7 - Autoscale the app on request rate (KEDA Prometheus scaler)
+9. [x] Step 8 - Safe scale-to-zero for a second backend (KEDA HTTP Add-on)
 
 ## Design constraints (deliberate)
 

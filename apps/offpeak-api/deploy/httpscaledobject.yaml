@@ -1,0 +1,42 @@
+## HTTPScaledObject for offpeak-api (Step 8): the scale-to-zero policy.
+##
+## This is the HTTP Add-on's CRD (http.keda.sh), not KEDA core's ScaledObject.
+## It tells the interceptor which host to route and which workload to wake, and
+## it lets the deployment rest at zero. Like the Step 7 ScaledObject, the policy
+## lives in git (Argo owns it); the replica count lives at runtime (the HPA the
+## add-on creates owns it). See docs/adr/021.
+apiVersion: http.keda.sh/v1alpha1
+kind: HTTPScaledObject
+metadata:
+  name: offpeak-api
+  namespace: demo
+spec:
+  ## The Host header the interceptor matches on. In-cluster callers send requests
+  ## to the interceptor proxy (keda-add-ons-http-interceptor-proxy.keda.svc,
+  ## port 8080) with `Host: offpeak-api`, and the interceptor routes them here.
+  hosts:
+    - offpeak-api
+  scaleTargetRef:
+    name: offpeak-api
+    kind: Deployment
+    apiVersion: apps/v1
+    service: offpeak-api
+    port: 80
+  replicas:
+    ## The whole point of Step 8: a real floor of zero. When idle, no pod runs.
+    min: 0
+    max: 3
+  ## Rest back to zero 60s after traffic falls below the target. Short for a demo
+  ## so the cycle is quick to watch; production would tune this to the real
+  ## off-peak shape (a service woken every few minutes should not thrash 0<->1).
+  scaledownPeriod: 60
+  scalingMetric:
+    ## Scale on request rate. targetValue is deliberately low so light traffic
+    ## holds a single replica; the wake from zero itself is driven by the
+    ## interceptor holding the request, not by this metric (a scaled-to-zero app
+    ## emits no metric to read, which is exactly why the Prometheus scaler cannot
+    ## do this and the interceptor can).
+    requestRate:
+      granularity: 1s
+      targetValue: 10
+      window: 1m

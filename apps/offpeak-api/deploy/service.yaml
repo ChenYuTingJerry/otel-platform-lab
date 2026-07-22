@@ -1,0 +1,18 @@
+## offpeak-api Service (Step 8). ClusterIP, in-cluster only. The HTTPScaledObject
+## routes to this Service by name/port; when the deployment is at zero, live
+## traffic reaches it only through the interceptor proxy (with Host: offpeak-api),
+## not by hitting this Service directly. See docs/adr/021.
+apiVersion: v1
+kind: Service
+metadata:
+  name: offpeak-api
+  namespace: demo
+  labels:
+    app: offpeak-api
+spec:
+  selector:
+    app: offpeak-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000

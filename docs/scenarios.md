@@ -518,9 +518,15 @@ missing:
 
 Autoscaling used to sit on this list. Step 7 pulled it across the boundary on
 purpose (KEDA scales the app on its request rate, ADR 020), so it is now a built
-BOUNDARY capability rather than a deferred one. What stays deferred is safe
-scale-to-zero, which would need the KEDA HTTP Add-on and a scrape mechanism the
-lab does not have (that is ADR 020's revisit trigger).
+BOUNDARY capability rather than a deferred one. Safe scale-to-zero was the next
+deferred item under it, on ADR 020's revisit trigger. Step 8 built that too: the
+KEDA HTTP Add-on rests a second backend at zero and wakes it on the first request
+(ADR 021). Two autoscaling patterns now coexist on purpose, a reactive metric for
+a service that bursts and a request-path hold for one that idles to zero. The one
+worry ADR 020 had, that the Add-on's own metrics were Prometheus-only and the lab
+has no scrape path, was avoided rather than accepted: the interceptor pushes its
+metrics over OTLP through `extraEnvs`, so the scaling layer is observed without a
+scrape mechanism.
 
 **Takeaway.** A platform is defined as much by its refusals as by its features. An
 undocumented gap is a blind spot. The same gap, written down with the condition that

@@ -1,0 +1,63 @@
+## offpeak-api Deployment (Step 8): a backend that rests at zero off-peak and
+## wakes on the first request.
+##
+## It reuses the sample-api:0.1.0 image (same FastAPI service, /rolldice and
+## /healthz), so there is no new app code. What is different is how it scales:
+## the KEDA HTTP Add-on drives it from 0 to 1 through an interceptor that holds
+## the first request during the cold start. sample-api stays on the Prometheus
+## scaler with a floor of 1 (Step 7); this is the deliberate contrast. See
+## docs/adr/021.
+##
+## Auto-instrumented the same way as sample-api: the pod annotation opts in, the
+## OTel Operator injects the Python SDK at pod creation and points it at the
+## Collector. So the woken pod is observed like any other workload (its cold
+## start includes the SDK init container, which is itself visible in the traces).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: offpeak-api
+  namespace: demo
+  labels:
+    app: offpeak-api
+spec:
+  ## No `replicas` here on purpose (same rule as Step 7, docs/adr/020): the KEDA
+  ## HTTP Add-on's HPA owns the replica count, and a field can have only one
+  ## owner. With it absent from git, Argo's selfHeal does not fight the scaler as
+  ## it moves the deployment between 0 and N.
+  selector:
+    matchLabels:
+      app: offpeak-api
+  template:
+    metadata:
+      labels:
+        app: offpeak-api
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: "python"
+    spec:
+      containers:
+        - name: offpeak-api
+          image: sample-api:0.1.0
+          ## Imported into k3d by `make sample-image`, not pulled from a registry.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            ## Distinct service name so its telemetry is separable in Tempo and
+            ## Mimir and does not blend into sample-api's. Set explicitly so it
+            ## does not depend on the operator's name derivation.
+            - name: OTEL_SERVICE_NAME
+              value: offpeak-api
+          readinessProbe:
+            ## The HTTP Add-on waits for the pod to be Ready before forwarding the
+            ## held request, so this probe is on the wake-from-zero critical path.
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
