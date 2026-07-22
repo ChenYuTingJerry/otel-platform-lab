@@ -1030,9 +1030,9 @@ Argo path.
 
 Acceptance criteria:
 
-- [ ] The HTTP Add-on syncs via Argo (wave -1); its CRD exists before the app's HTTPScaledObject. (post-push)
+- [x] The HTTP Add-on syncs via Argo (wave -1); its CRD exists before the app's HTTPScaledObject.
 - [x] The `offpeak-api` HTTPScaledObject is Ready; offpeak-api rests at 0 replicas when idle.
 - [x] A request through the interceptor wakes it 0 -> 1 and is served (200), not dropped.
 - [x] It returns to 0 after `scaledownPeriod`.
 - [x] `interceptor_request_count_total` lands in Mimir (the autoscaling layer is self-observed).
-- [ ] `make verify-step8` green live on the Argo path. (6/7 pre-push; the Argo-app check is post-push)
+- [x] `make verify-step8` green live on the Argo path (7/7 after push + `make step8`).
